@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1E3A3A">
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>PocketLedger — Thrift &amp; Loan Ledger</title>
-<link rel="manifest" href="data:application/manifest+json;charset=utf-8,%7B%22name%22%3A%22PocketLedger%20%u2014%20Thrift%20%26%20Loan%20Ledger%22%2C%22short_name%22%3A%22PocketLedger%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%231B2A4A%22%2C%22theme_color%22%3A%22%231B2A4A%22%7D">
-<meta name="theme-color" content="#1B2A4A">
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script>window.react = window.React;</script>
@@ -15,8 +15,7 @@
 <script src="https://unpkg.com/recharts@2/umd/Recharts.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
-  html, body { margin: 0; padding: 0; font-family: 'IBM Plex Sans', sans-serif; background: #F7F3EA; color: #1B2A4A; }
-  /* Additional core layout styles omitted for brevity, keeping all existing styling intact */
+  html, body { margin: 0; padding: 0; }
 </style>
 </head>
 <body>
@@ -188,6 +187,7 @@ function seedLoansReceived() {
     { id: 'lr2', lender: 'First Trust Cooperative', phone: '', principal: 60000, interestRate: 0, dateReceived: '2026-02-01', dueDate: '2026-06-01', linkedPlanId: null, note: 'Shop capital', refunds: [{ id: uid(), date: '2026-05-01', amount: 60000 }] },
   ];
 }
+
 function seedSettings() {
   return {
     businessName: 'PocketLedger Ledger', ownerName: '', ownerPhone: '', countryCode: '234', currencySymbol: '\u20a6',
@@ -229,31 +229,510 @@ function invoiceStatusOf(inv) {
   return daysFromToday(inv.dueDate) < 0 ? 'overdue' : 'sent';
 }
 const INVOICE_STATUS_LABEL = { paid: 'Paid', draft: 'Draft', overdue: 'Overdue', sent: 'Awaiting payment' };
+const THEME_PRESETS = [
+  { id: 'navy', label: 'Navy', color: '#1B2A4A' },
+  { id: 'forest', label: 'Forest', color: '#1F5C3F' },
+  { id: 'wine', label: 'Wine', color: '#7A2E3D' },
+  { id: 'charcoal', label: 'Charcoal', color: '#2B2B2E' },
+  { id: 'royal', label: 'Royal', color: '#33257A' },
+  { id: 'teal', label: 'Teal', color: '#0F5C63' },
+];
+
+/* ============================== small components ============================== */
+function Stamp({ status, label }) {
+  return <span className={`stamp stamp-${status}`}>{label || STATUS_LABEL[status] || status}</span>;
+}
+function CategoryTag({ category }) {
+  const meta = CATEGORY_META[category] || CATEGORY_META.Daily;
+  return <span className={`tag ${meta.cls}`}>{category}</span>;
+}
+function ProgressBar({ value, max }) {
+  const pct = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0;
+  return (
+    <div className="progress-track">
+      <div className="progress-fill" style={{ width: pct + '%' }} />
+      <span className="progress-label kb-mono">{pct}%</span>
+    </div>
+  );
+}
+function StatCard({ label, value, icon: Icon, tone, sub }) {
+  return (
+    <div className={`stat-card tone-${tone}`}>
+      <div className="stat-icon"><Icon size={18} /></div>
+      <div className="stat-label">{label}</div>
+      <div className="stat-value kb-mono">{value}</div>
+      {sub && <div className="stat-sub">{sub}</div>}
+    </div>
+  );
+}
+function EmptyState({ text }) {
+  return <div className="empty-state">{text}</div>;
+}
+function SectionHeader({ eyebrow, title, action }) {
+  return (
+    <div className="section-header">
+      <div>
+        <div className="eyebrow">{eyebrow}</div>
+        <h2 className="kb-display">{title}</h2>
+      </div>
+      {action}
+    </div>
+  );
+}
+function AddPaymentRow({ label, onAdd }) {
+  const [amount, setAmount] = useState('');
+  const [date, setDate] = useState(todayISO());
+  return (
+    <div className="add-payment-row">
+      <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="kb-input kb-mono" />
+      <input type="number" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)}
+        className="kb-input kb-mono" style={{ width: 130 }} />
+      <button
+        className="btn btn-small btn-primary"
+        onClick={() => {
+          if (!amount || Number(amount) <= 0) return;
+          onAdd(Number(amount), date);
+          setAmount('');
+        }}
+      >
+        <Plus size={14} /> {label}
+      </button>
+    </div>
+  );
+}
+function Modal({ title, onClose, children }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3 className="kb-display">{title}</h3>
+          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="modal-body">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function ReceiptModal({ receipt, onClose, fmt, settings, planById, memberById, shareToWhatsApp, shareImageToWhatsApp }) {
+  const isLoan = receipt.kind === 'loan';
+  const isCycle = receipt.kind === 'cyclePayout';
+  const receiptNo = isLoan ? receipt.payment.id.slice(0, 8).toUpperCase()
+    : isCycle ? receipt.payout.id.slice(0, 8).toUpperCase()
+    : receipt.contribution.id.slice(0, 8).toUpperCase();
+  const issuedOn = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  let title, personName, personPhone, lines, waText;
+
+  if (isLoan) {
+    const { loan, key, personField, payment } = receipt;
+    const accrued = accruedOf(loan, key);
+    const paidTotal = paidOf(loan, key);
+    const outstanding = outstandingOf(loan, key);
+    personName = loan[personField];
+    personPhone = loan.phone;
+    title = key === 'repayments' ? 'Loan Repayment Receipt' : 'Loan Refund Receipt';
+    lines = [
+      ['Receipt No.', receiptNo],
+      ['Date issued', issuedOn],
+      [key === 'repayments' ? 'Received from' : 'Paid to', personName],
+      ['Payment date', new Date(payment.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })],
+      ['This payment', fmt(payment.amount)],
+      ['divider', ''],
+      ['Original principal', fmt(loan.principal)],
+      ...(accrued > 0 ? [['Accrued interest', fmt(accrued)]] : []),
+      ['Total paid to date', fmt(paidTotal)],
+      ['Outstanding balance', fmt(outstanding)],
+    ];
+    waText = [
+      `*${settings.businessName}* \u2014 ${title}`, '',
+      `Receipt No: ${receiptNo}`,
+      `${key === 'repayments' ? 'Received from' : 'Paid to'}: ${personName}`,
+      `Amount: ${fmt(payment.amount)} on ${new Date(payment.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`,
+      `Outstanding balance: ${fmt(outstanding)}`,
+    ].join('\n');
+  } else if (isCycle) {
+    const { plan, payout } = receipt;
+    const recipient = memberById(payout.memberId);
+    personName = recipient ? recipient.name : 'Member';
+    personPhone = recipient ? recipient.phone : '';
+    title = 'Thrift Cycle Payout Receipt';
+    lines = [
+      ['Receipt No.', receiptNo],
+      ['Date issued', issuedOn],
+      ['Paid out to', personName],
+      ['Plan', plan.name],
+      ['Round', `${(plan.payouts || []).findIndex((p) => p.id === payout.id) + 1} of ${plan.memberIds.length}`],
+      ['Payout date', new Date(payout.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })],
+      ['Amount paid out', fmt(payout.amount)],
+    ];
+    waText = [
+      `*${settings.businessName}* \u2014 ${title}`, '',
+      `Receipt No: ${receiptNo}`,
+      `Paid out to: ${personName}`,
+      `Plan: ${plan.name}`,
+      `Amount: ${fmt(payout.amount)} on ${new Date(payout.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`,
+    ].join('\n');
+  } else {
+    const { member, contribution } = receipt;
+    const plan = planById(contribution.planId);
+    personName = member.name;
+    personPhone = member.phone;
+    title = 'Thrift Contribution Receipt';
+    lines = [
+      ['Receipt No.', receiptNo],
+      ['Date issued', issuedOn],
+      ['Contributor', personName],
+      ['Plan', plan ? plan.name : 'N/A'],
+      ['Category', plan ? plan.category : ''],
+      ['Payment date', new Date(contribution.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })],
+      ['Amount', fmt(contribution.amount)],
+    ];
+    waText = [
+      `*${settings.businessName}* \u2014 ${title}`, '',
+      `Receipt No: ${receiptNo}`,
+      `Contributor: ${personName}`,
+      `Plan: ${plan ? plan.name : 'N/A'}`,
+      `Amount: ${fmt(contribution.amount)} on ${new Date(contribution.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`,
+    ].join('\n');
+  }
+
+  const downloadImage = () => {
+    const node = document.getElementById('receipt-print-area');
+    if (!node || !window.html2canvas) return;
+    window.html2canvas(node, { backgroundColor: '#F7F3EA', scale: 2 }).then((canvas) => {
+      const url = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url; a.download = `receipt-${receiptNo}.png`; a.click();
+    });
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card receipt-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3 className="kb-display">{title}</h3>
+          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <div id="receipt-print-area" className="receipt-sheet">
+            <div className="receipt-brand kb-display">{settings.businessName}</div>
+            <div className="receipt-sub">{title}</div>
+            <div className="receipt-lines">
+              {lines.map(([label, value], i) => label === 'divider'
+                ? <div key={i} className="receipt-divider" />
+                : <div key={i} className="receipt-row"><span>{label}</span><span className="kb-mono">{value}</span></div>)}
+            </div>
+            <div className="receipt-footer">Issued {issuedOn}{settings.ownerName ? ` \u00b7 ${settings.ownerName}` : ''}</div>
+          </div>
+          <div className="receipt-actions">
+            <button className="btn btn-outline btn-small" onClick={downloadImage}><ImageIcon size={14} /> Download image</button>
+            <button className="btn btn-outline btn-small" onClick={() => window.print()}><Printer size={14} /> Print / Save PDF</button>
+            <button className="btn btn-ghost btn-small" onClick={() => shareImageToWhatsApp(personPhone, waText, `receipt-${receiptNo}.png`)}><MessageCircle size={14} /> Share image on WhatsApp</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InvoiceDocModal({ invoice, client, settings, fmt, onClose, onMarkPaid, shareToWhatsApp, shareImageToWhatsApp, message }) {
+  const status = invoiceStatusOf(invoice);
+  const total = invoiceTotal(invoice);
+  const issuedOn = new Date(invoice.issueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  const dueOn = new Date(invoice.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+
+  const downloadImage = () => {
+    const node = document.getElementById('receipt-print-area');
+    if (!node || !window.html2canvas) return;
+    window.html2canvas(node, { backgroundColor: '#F7F3EA', scale: 2 }).then((canvas) => {
+      const url = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url; a.download = `${invoice.number}.png`; a.click();
+    });
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card receipt-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3 className="kb-display">Invoice {invoice.number}</h3>
+          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="receipt-sheet" id="receipt-print-area">
+            <div className="invoice-doc-head">
+              {settings.logoDataUrl && <img src={settings.logoDataUrl} alt="logo" className="invoice-logo" />}
+              <div>
+                <div className="receipt-brand">{settings.businessName}</div>
+                <div className="panel-sub">{[settings.rcNumber && `RC ${settings.rcNumber}`, settings.businessPhone, settings.businessEmail].filter(Boolean).join(' \u00b7 ')}</div>
+              </div>
+            </div>
+            <div className="receipt-sub" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>INVOICE {invoice.number}</span>
+              <Stamp status={status === 'sent' ? 'active' : status === 'overdue' ? 'overdue' : status === 'paid' ? 'completed' : 'due-soon'} />
+            </div>
+            <div className="receipt-row"><span>Bill to</span><span className="kb-mono">{client ? client.name : ''}</span></div>
+            {client?.address && <div className="receipt-row"><span>Address</span><span className="kb-mono">{client.address}</span></div>}
+            <div className="receipt-row"><span>Issued</span><span className="kb-mono">{issuedOn}</span></div>
+            <div className="receipt-row"><span>Due</span><span className="kb-mono">{dueOn}</span></div>
+            <div className="receipt-divider" />
+            <div className="receipt-lines">
+              {invoice.items.map((it) => (
+                <div key={it.id} className="receipt-row"><span>{it.desc || 'Item'} ({it.qty} &times; {fmt(it.price)})</span><span className="kb-mono">{fmt(it.qty * it.price)}</span></div>
+              ))}
+            </div>
+            <div className="receipt-divider" />
+            <div className="receipt-row" style={{ fontWeight: 700, fontSize: 15 }}><span>Total</span><span className="kb-mono">{fmt(total)}</span></div>
+            {settings.accountNumber && (
+              <div className="receipt-footer">Pay to: {settings.bankName} {settings.accountNumber} ({settings.accountName || settings.businessName})</div>
+            )}
+            {invoice.notes && <div className="receipt-footer">{invoice.notes}</div>}
+          </div>
+          <div className="receipt-actions">
+            {status !== 'paid' && <button className="btn btn-secondary btn-small" onClick={() => onMarkPaid(invoice.id)}><CheckCircle2 size={14} /> Mark as paid</button>}
+            <button className="btn btn-outline btn-small" onClick={downloadImage}><ImageIcon size={14} /> Download image</button>
+            <button className="btn btn-outline btn-small" onClick={() => window.print()}><Printer size={14} /> Print / Save PDF</button>
+            <button className="btn btn-ghost btn-small" onClick={() => shareImageToWhatsApp(client?.phone, message, `${invoice.number}.png`)}><MessageCircle size={14} /> Share image on WhatsApp</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PaymentReceiptModal({ receiptDoc, client, invoice, settings, fmt, onClose, shareToWhatsApp, shareImageToWhatsApp }) {
+  const payerName = client ? client.name : (receiptDoc.clientName || 'Walk-in customer');
+  const payerPhone = client ? client.phone : '';
+  const issuedOn = new Date(receiptDoc.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+
+  const message = [
+    `*${settings.businessName}*${settings.rcNumber ? ` (RC ${settings.rcNumber})` : ''}`, '',
+    `RECEIPT ${receiptDoc.receiptNo}`,
+    `Received from: ${payerName}`,
+    `Amount: ${fmt(receiptDoc.amount)}`,
+    `Date: ${issuedOn}`,
+    ...(invoice ? [`For invoice: ${invoice.number}`] : []),
+    ...(receiptDoc.note ? [receiptDoc.note] : []),
+  ].join('\n');
+
+  const downloadImage = () => {
+    const node = document.getElementById('receipt-print-area');
+    if (!node || !window.html2canvas) return;
+    window.html2canvas(node, { backgroundColor: '#F7F3EA', scale: 2 }).then((canvas) => {
+      const url = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url; a.download = `${receiptDoc.receiptNo}.png`; a.click();
+    });
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card receipt-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3 className="kb-display">Receipt {receiptDoc.receiptNo}</h3>
+          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <div id="receipt-print-area" className="receipt-sheet">
+            <div className="invoice-doc-head">
+              {settings.logoDataUrl && <img src={settings.logoDataUrl} alt="logo" className="invoice-logo" />}
+              <div>
+                <div className="receipt-brand">{settings.businessName}</div>
+                <div className="panel-sub">{[settings.rcNumber && `RC ${settings.rcNumber}`, settings.businessPhone, settings.businessEmail].filter(Boolean).join(' \u00b7 ')}</div>
+              </div>
+            </div>
+            <div className="receipt-sub" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>RECEIPT {receiptDoc.receiptNo}</span>
+              <Stamp status="completed" label="Paid" />
+            </div>
+            <div className="receipt-row"><span>Received from</span><span className="kb-mono">{payerName}</span></div>
+            <div className="receipt-row"><span>Date</span><span className="kb-mono">{issuedOn}</span></div>
+            {invoice && <div className="receipt-row"><span>For invoice</span><span className="kb-mono">{invoice.number}</span></div>}
+            <div className="receipt-divider" />
+            <div className="receipt-row" style={{ fontWeight: 700, fontSize: 15 }}><span>Amount received</span><span className="kb-mono">{fmt(receiptDoc.amount)}</span></div>
+            {receiptDoc.note && <div className="receipt-footer">{receiptDoc.note}</div>}
+            {settings.accountNumber && (
+              <div className="receipt-footer">Pay to: {settings.bankName} {settings.accountNumber} ({settings.accountName || settings.businessName})</div>
+            )}
+          </div>
+          <div className="receipt-actions">
+            <button className="btn btn-outline btn-small" onClick={downloadImage}><ImageIcon size={14} /> Download image</button>
+            <button className="btn btn-outline btn-small" onClick={() => window.print()}><Printer size={14} /> Print / Save PDF</button>
+            <button className="btn btn-ghost btn-small" onClick={() => shareImageToWhatsApp(payerPhone, message, `${receiptDoc.receiptNo}.png`)}><MessageCircle size={14} /> Share image on WhatsApp</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AuthScreen({ users, onLogin, onSignup, flash }) {
+  const [mode, setMode] = useState('login');
+  const [showPw, setShowPw] = useState(false);
+  const [fields, setFields] = useState({ name: '', businessName: '', email: '', password: '' });
+  const set = (k, v) => setFields((f) => ({ ...f, [k]: v }));
+
+  const submit = () => {
+    if (mode === 'signup') {
+      if (!fields.name || !fields.email || !fields.password) {
+        flash('Please fill in your name, email and password to create your account.');
+        return;
+      }
+      if (users.some((u) => u.email.toLowerCase() === fields.email.toLowerCase())) {
+        flash('An account with that email already exists \u2014 try logging in.');
+        return;
+      }
+      onSignup({ id: uid(), name: fields.name, businessName: fields.businessName || '', email: fields.email, password: fields.password });
+    } else {
+      const match = users.find((u) => u.email.toLowerCase() === fields.email.toLowerCase() && u.password === fields.password);
+      if (!match) { flash('No account matches that email and password.'); return; }
+      onLogin(match);
+    }
+  };
+
+  return (
+    <div className="auth-wrap">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+        .auth-wrap{min-height:100vh;width:100%;display:flex;align-items:center;justify-content:center;background:#1B2A4A;background-image:radial-gradient(circle at 20% 20%, rgba(183,138,46,0.18), transparent 45%), radial-gradient(circle at 80% 80%, rgba(31,122,92,0.18), transparent 45%);font-family:'IBM Plex Sans',sans-serif;padding:20px;}
+        .auth-card{width:100%;max-width:400px;background:#F7F3EA;border-radius:16px;padding:36px 32px;box-shadow:0 24px 70px rgba(0,0,0,0.35);}
+        .auth-logo{display:flex;align-items:center;gap:10px;margin-bottom:6px;}
+        .auth-logo-mark{width:38px;height:38px;border-radius:50%;background:#B78A2E;display:flex;align-items:center;justify-content:center;color:#1B2A4A;}
+        .auth-title{font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:#1B2A4A;}
+        .auth-sub{font-size:13px;color:#5B6478;margin-bottom:22px;}
+        .auth-tabs{display:flex;background:#EFEAE0;border-radius:10px;padding:4px;margin-bottom:22px;}
+        .auth-tab{flex:1;text-align:center;padding:9px 0;font-size:13px;font-weight:600;border-radius:8px;cursor:pointer;color:#5B6478;}
+        .auth-tab-active{background:#1B2A4A;color:#fff;}
+        .auth-field{margin-bottom:14px;}
+        .auth-field label{display:block;font-size:12px;font-weight:600;color:#5B6478;margin-bottom:5px;}
+        .auth-input-wrap{position:relative;}
+        .auth-input{width:100%;border:1px solid #E7E0CC;border-radius:8px;padding:10px 12px;font-size:13.5px;font-family:inherit;background:#fff;}
+        .auth-eye{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#5B6478;}
+        .auth-submit{width:100%;background:#1B2A4A;color:#fff;border:none;border-radius:9px;padding:12px 0;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;margin-top:6px;}
+        .auth-submit:hover{background:#28395e;}
+        .auth-switch{text-align:center;font-size:12.5px;color:#5B6478;margin-top:16px;}
+        .auth-switch button{background:none;border:none;color:#B78A2E;font-weight:600;cursor:pointer;padding:0;}
+        .auth-hint{text-align:center;font-size:11.5px;color:#8B8578;margin-top:18px;}
+        .auth-demo-box{margin-top:16px;background:#EFEAE0;border-radius:9px;padding:10px 12px;font-size:12px;color:#5B6478;text-align:center;}
+        .auth-demo-fill{display:block;margin:6px auto 0;background:none;border:none;color:#B78A2E;font-weight:600;font-size:12px;cursor:pointer;padding:0;}
+      `}</style>
+      <div className="auth-card">
+        <div className="auth-logo">
+          <div className="auth-logo-mark"><PiggyBank size={19} /></div>
+          <div className="auth-title">PocketLedger</div>
+        </div>
+        <div className="auth-sub">Thrift, loans and business payments \u2014 all in one ledger.</div>
+        <div className="auth-tabs">
+          <div className={`auth-tab ${mode === 'login' ? 'auth-tab-active' : ''}`} onClick={() => setMode('login')}>Log in</div>
+          <div className={`auth-tab ${mode === 'signup' ? 'auth-tab-active' : ''}`} onClick={() => setMode('signup')}>Sign up</div>
+        </div>
+
+        {mode === 'signup' && (
+          <>
+            <div className="auth-field"><label>Your full name</label>
+              <input className="auth-input" value={fields.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Amaka Obi" />
+            </div>
+            <div className="auth-field"><label>Business name (optional)</label>
+              <input className="auth-input" value={fields.businessName} onChange={(e) => set('businessName', e.target.value)} placeholder="Only needed for Payments/Thrift receipts" />
+            </div>
+          </>
+        )}
+        <div className="auth-field"><label>Email address</label>
+          <input className="auth-input" type="email" value={fields.email} onChange={(e) => set('email', e.target.value)} placeholder="you@example.com" />
+        </div>
+        <div className="auth-field"><label>Password</label>
+          <div className="auth-input-wrap">
+            <input className="auth-input" type={showPw ? 'text' : 'password'} value={fields.password} onChange={(e) => set('password', e.target.value)} placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" style={{ paddingRight: 36 }} />
+            <button className="auth-eye" onClick={() => setShowPw((s) => !s)}>{showPw ? <EyeOff size={15} /> : <Eye size={15} />}</button>
+          </div>
+        </div>
+        <button className="auth-submit" onClick={submit}>
+          {mode === 'signup' ? <><UserPlus size={16} /> Create account</> : <><LogIn size={16} /> Log in</>}
+        </button>
+        <div className="auth-switch">
+          {mode === 'signup' ? (
+            <>Already have an account? <button onClick={() => setMode('login')}>Log in</button></>
+          ) : (
+            <>New here? <button onClick={() => setMode('signup')}>Create an account</button></>
+          )}
+        </div>
+        {mode === 'login' && (
+          <div className="auth-demo-box">
+            <div>Demo login: <strong>demo@pocketledger.ng</strong> / <strong>demo1234</strong></div>
+            <button type="button" className="auth-demo-fill" onClick={() => { set('email', 'demo@pocketledger.ng'); set('password', 'demo1234'); }}>Use demo login</button>
+          </div>
+        )}
+        <div className="auth-hint">Your data stays in this browser session \u2014 export a backup from Settings once you're in. You can change your login email and password anytime from Settings.</div>
+      </div>
+    </div>
+  );
+}
+
+function Carousel({ slides }) {
+  const [index, setIndex] = useState(0);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    timerRef.current = setInterval(() => setIndex((i) => (i + 1) % slides.length), 5000);
+    return () => clearInterval(timerRef.current);
+  }, [slides.length]);
+
+  const go = (i) => {
+    clearInterval(timerRef.current);
+    setIndex((i + slides.length) % slides.length);
+    timerRef.current = setInterval(() => setIndex((x) => (x + 1) % slides.length), 5000);
+  };
+
+  const s = slides[index];
+  return (
+    <div className={`carousel tone-${s.tone}`}>
+      <button className="carousel-arrow carousel-arrow-left" onClick={() => go(index - 1)}><ChevronRight size={16} style={{ transform: 'rotate(180deg)' }} /></button>
+      <div className="carousel-slide">
+        <div className="carousel-icon"><s.icon size={26} /></div>
+        <div className="carousel-body">
+          <div className="carousel-title kb-display">{s.title}</div>
+          <div className="carousel-desc">{s.desc}</div>
+        </div>
+      </div>
+      <button className="carousel-arrow carousel-arrow-right" onClick={() => go(index + 1)}><ChevronRight size={16} /></button>
+      <div className="carousel-dots">
+        {slides.map((_, i) => <button key={i} className={`carousel-dot ${i === index ? 'carousel-dot-active' : ''}`} onClick={() => go(i)} />)}
+      </div>
+    </div>
+  );
+}
+
+function HomeScreen({ user, settings, onPick, stats }) {
+  const cards = [
+    { id: 'thrift', title: 'Thrift', desc: 'Run daily, weekly, monthly, rotating cycle or target savings circles and track every contribution.', icon: PiggyBank, tone: 'green', stat: `${stats.plans} active plan(s)` },
+    { id: 'loans', title: 'Loan Tracking', desc: 'Track money you\u2019ve lent out and personal loans you\u2019ve received, with reminders.', icon: HandCoins, tone: 'steel', stat: `${stats.loans} loan(s) on file` },
+    { id: 'payments', title: 'Payment Portal', desc: 'Invoice clients, issue receipts, and send payment reminders for your business.', icon: Wallet, tone: 'gold', stat: `${stats.invoices} invoice(s)` },
+  ];
+  const slides = [
+    { title: 'Thrift', icon: PiggyBank, tone: 'green', desc: 'Daily, weekly and monthly ajo, target savings, and rotating cycle thrift where one member is paid out each round until everyone has had a turn.' },
+    { title: 'Loan Tracking', icon: HandCoins, tone: 'steel', desc: 'Keep tabs on money you\u2019ve lent and personal loans you\u2019ve taken, with interest, due dates and reminders handled for you.' },
+    { title: 'Payment Portal', icon: Wallet, tone: 'gold', desc: 'Bill clients with branded invoices, collect payments, and issue proper receipts \u2014 all shareable straight to WhatsApp.' },
+  ];
+  return (
+    <>
+      <SectionHeader eyebrow={`Welcome back${user?.name ? ', ' + user.name.split(' ')[0] : ''}`} title="What would you like to open?" />
+      <Carousel slides={slides} />
+      <div className="home-card-grid">
+        {cards.map((c) => (
+          <div key={c.id} className={`home-card tone-${c.tone}`} onClick={() => onPick(c.id)}>
+            <div className="home-card-icon"><c.icon size={22} /></div>
+            <div className="home-card-title kb-display">{c.title}</div>
+            <div className="home-card-desc">{c.desc}</div>
+            <div className="home-card-foot"><span>{c.stat}</span><ArrowRight size={15} /></div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
 
 /* ============================== app ============================== */
 function App() {
-  // Register Service Worker for PWA offline support
-  useEffect(() => {
-    if ('serviceWorker' in navigator) {
-      const swCode = `
-        self.addEventListener('install', (e) => {
-          self.skipWaiting();
-        });
-        self.addEventListener('activate', (e) => {
-          e.waitUntil(clients.claim());
-        });
-        self.addEventListener('fetch', (e) => {
-          e.respondWith(
-            caches.match(e.request).then((response) => response || fetch(e.request))
-          );
-        });
-      `;
-      const blob = new Blob([swCode], { type: 'text/javascript' });
-      const swUrl = URL.createObjectURL(blob);
-      navigator.serviceWorker.register(swUrl).catch(() => {});
-    }
-  }, []);
-
   const [users, setUsers] = useState([{ id: 'u1', name: 'Amaka Obi', businessName: 'PocketLedger Ledger', email: 'demo@pocketledger.ng', password: 'demo1234' }]);
   const [currentUser, setCurrentUser] = useState(null);
   const [activeModule, setActiveModule] = useState('home');
@@ -281,24 +760,1915 @@ function App() {
   const [loanGivenSearch, setLoanGivenSearch] = useState('');
   const [loanReceivedSearch, setLoanReceivedSearch] = useState('');
   const [settings, setSettings] = useState(seedSettings);
+  const [newLoginEmail, setNewLoginEmail] = useState('');
+  const [newLoginPassword, setNewLoginPassword] = useState('');
   const [receipt, setReceipt] = useState(null);
   const [toast, setToast] = useState('');
+  const importInputRef = useRef(null);
+  const logoInputRef = useRef(null);
+  const triggerLogoUpload = () => logoInputRef.current && logoInputRef.current.click();
+  const handleLogoFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setSettings((s) => ({ ...s, logoDataUrl: reader.result }));
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
 
   const fmt = (n) => settings.currencySymbol + Math.round(Number(n || 0)).toLocaleString('en-NG');
   const flash = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
+  const digitsOnly = (s) => (s || '').replace(/\D/g, '');
+  const waHref = (phone, text) => {
+    const digits = digitsOnly(phone);
+    let number = '';
+    if (digits) {
+      if (digits.startsWith(settings.countryCode)) number = digits;
+      else if (digits.startsWith('0')) number = settings.countryCode + digits.slice(1);
+      else number = settings.countryCode + digits;
+    }
+    return `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
+  };
+  const shareToWhatsApp = (phone, text) => window.open(waHref(phone, text), '_blank');
+  const shareImageToWhatsApp = (phone, text, filename) => {
+    flash('Preparing image to share\u2026');
+    shareNodeImageToWhatsApp('receipt-print-area', filename, waHref(phone, text));
+  };
+
+  const [modal, setModal] = useState(null);
+  const [form, setForm] = useState({});
+  const openModal = (type, initial = {}) => { setModal(type); setForm(initial); };
+  const closeModal = () => { setModal(null); setForm({}); };
+  const setField = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  /* ---------- lookups ---------- */
+  const memberById = (id) => members.find((m) => m.id === id);
+  const planById = (id) => plans.find((p) => p.id === id);
+  const clientById = (id) => clients.find((c) => c.id === id);
+  const invoiceById = (id) => invoices.find((i) => i.id === id);
+  const findContribution = (planId, memberId, period) =>
+    contributions.find((c) => c.planId === planId && c.memberId === memberId && c.period === period);
+  const cycleCurrentPeriod = (plan) => { const periods = periodsForPlan(plan); return periods[periods.length - 1]; };
+  const cyclePendingContributors = (plan) => {
+    const period = cycleCurrentPeriod(plan);
+    return plan.memberIds.filter((memberId) => !findContribution(plan.id, memberId, period));
+  };
+
+  const toggleContribution = (planId, memberId, period, amount) => {
+    const existing = findContribution(planId, memberId, period);
+    if (existing) {
+      setContributions((prev) => prev.filter((c) => c.id !== existing.id));
+    } else {
+      setContributions((prev) => [...prev, { id: uid(), planId, memberId, period, amount, date: todayISO() }]);
+    }
+  };
+
+  const planTotal = (planId) => contributions.filter((c) => c.planId === planId).reduce((s, c) => s + c.amount, 0);
+  const memberTotal = (memberId) => contributions.filter((c) => c.memberId === memberId).reduce((s, c) => s + c.amount, 0);
+  const memberConsistency = (memberId) => {
+    const relevantPlans = plans.filter((p) => p.memberIds.includes(memberId));
+    let due = 0, paid = 0;
+    relevantPlans.forEach((p) => {
+      const periods = periodsForPlan(p).slice(0, -1);
+      due += periods.length;
+      periods.forEach((period) => { if (findContribution(p.id, memberId, period)) paid += 1; });
+    });
+    return due > 0 ? Math.round((paid / due) * 100) : 100;
+  };
+
+  /* ---------- alerts ---------- */
+  const alerts = useMemo(() => {
+    const list = [];
+    loansGiven.forEach((l) => {
+      const status = loanStatus(l, 'repayments');
+      if (status === 'overdue') list.push({ id: 'lg-' + l.id, severity: 'high', group: 'Loans given', text: `${l.borrower} is overdue by ${Math.abs(daysFromToday(l.dueDate))} day(s) \u2014 ${fmt(outstandingOf(l, 'repayments'))} outstanding.` });
+      else if (status === 'due-soon') list.push({ id: 'lgs-' + l.id, severity: 'medium', group: 'Loans given', text: `${l.borrower}'s repayment is due in ${daysFromToday(l.dueDate)} day(s).` });
+    });
+    loansReceived.forEach((l) => {
+      const status = loanStatus(l, 'refunds');
+      if (status === 'overdue') list.push({ id: 'lr-' + l.id, severity: 'high', group: 'Loans received', text: `You are ${Math.abs(daysFromToday(l.dueDate))} day(s) overdue refunding ${l.lender} \u2014 ${fmt(outstandingOf(l, 'refunds'))} left.` });
+      else if (status === 'due-soon') list.push({ id: 'lrs-' + l.id, severity: 'medium', group: 'Loans received', text: `Refund to ${l.lender} is due in ${daysFromToday(l.dueDate)} day(s).` });
+    });
+    plans.forEach((p) => {
+      const periods = periodsForPlan(p).slice(0, -1);
+      const recent = periods.slice(-3);
+      p.memberIds.forEach((memberId) => {
+        const missed = recent.filter((period) => !findContribution(p.id, memberId, period));
+        if (missed.length >= 2) {
+          list.push({ id: 'miss-' + p.id + memberId, severity: 'medium', group: 'Thrift contributions', text: `${memberById(memberId)?.name} has missed ${missed.length} of the last ${recent.length} rounds in ${p.name}.` });
+        }
+      });
+    });
+    invoices.forEach((inv) => {
+      const status = invoiceStatusOf(inv);
+      const client = clientById(inv.clientId);
+      const name = client ? client.name : 'Client';
+      if (status === 'overdue') list.push({ id: 'inv-' + inv.id, severity: 'high', group: 'Payments', text: `Invoice ${inv.number} to ${name} is overdue by ${Math.abs(daysFromToday(inv.dueDate))} day(s) \u2014 ${fmt(invoiceTotal(inv))} outstanding.` });
+      else if (status === 'sent' && daysFromToday(inv.dueDate) <= 3) list.push({ id: 'invs-' + inv.id, severity: 'medium', group: 'Payments', text: `Invoice ${inv.number} to ${name} is due in ${daysFromToday(inv.dueDate)} day(s).` });
+    });
+    return list.filter((a) => !dismissed.includes(a.id));
+  }, [loansGiven, loansReceived, plans, contributions, dismissed, invoices, clients]);
+
+  /* ---------- dashboard derived data ---------- */
+  const totalCollected = contributions.reduce((s, c) => s + c.amount, 0);
+  const totalOwedToMe = loansGiven.reduce((s, l) => s + outstandingOf(l, 'repayments'), 0);
+  const totalIOwe = loansReceived.reduce((s, l) => s + outstandingOf(l, 'refunds'), 0);
+  const activePlansCount = plans.length;
+  const cyclePlansCount = plans.filter((p) => p.category === 'Cycle' && !cycleComplete(p)).length;
+  const totalInvoiced = invoices.reduce((s, i) => s + invoiceTotal(i), 0);
+  const totalReceived = receipts.reduce((s, r) => s + r.amount, 0);
+  const totalOutstanding = invoices.filter((i) => i.status !== 'paid').reduce((s, i) => s + invoiceTotal(i), 0);
+  const moduleAlerts = (groupNames) => alerts.filter((a) => groupNames.includes(a.group));
+
+  const chartData = useMemo(() => {
+    const weeks = lastNDates(8, 7);
+    return weeks.map((w, i) => {
+      const start = new Date(w).getTime();
+      const end = start + 7 * dayMs;
+      const total = contributions.filter((c) => {
+        const t = new Date(c.date).getTime();
+        return t >= start && t < end;
+      }).reduce((s, c) => s + c.amount, 0);
+      return { label: new Date(w).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }), total };
+    });
+  }, [contributions]);
+
+  const recentActivity = useMemo(() => {
+    const acts = [];
+    contributions.forEach((c) => acts.push({ date: c.date, text: `${memberById(c.memberId)?.name} paid ${fmt(c.amount)} into ${planById(c.planId)?.name}`, kind: 'in', scope: 'thrift' }));
+    plans.forEach((p) => (p.payouts || []).forEach((po) => acts.push({ date: po.date, text: `${memberById(po.memberId)?.name} received the ${fmt(po.amount)} cycle payout from ${p.name}`, kind: 'out', scope: 'thrift' })));
+    loansGiven.forEach((l) => l.repayments.forEach((r) => acts.push({ date: r.date, text: `${l.borrower} repaid ${fmt(r.amount)}`, kind: 'in', scope: 'loans' })));
+    loansReceived.forEach((l) => l.refunds.forEach((r) => acts.push({ date: r.date, text: `You refunded ${fmt(r.amount)} to ${l.lender}`, kind: 'out', scope: 'loans' })));
+    receipts.forEach((r) => {
+      const client = clientById(r.clientId);
+      acts.push({ date: r.date, text: `Received ${fmt(r.amount)} from ${client ? client.name : (r.clientName || 'a customer')} \u2014 ${r.receiptNo}`, kind: 'in', scope: 'payments' });
+    });
+    return acts.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 12);
+  }, [contributions, loansGiven, loansReceived, plans, receipts, clients]);
+
+  const borrowerNames = useMemo(() => Array.from(new Set(loansGiven.map((l) => l.borrower))), [loansGiven]);
+  const lenderNames = useMemo(() => Array.from(new Set(loansReceived.map((l) => l.lender))), [loansReceived]);
+
+  /* ---------- submit handlers ---------- */
+  const submitNewPlan = () => {
+    if (!form.name || !form.amount) return;
+    const category = form.category || 'Daily';
+    if (category === 'Cycle' && (form.memberIds || []).length < 2) { flash('Pick at least 2 members for a rotating cycle plan.'); return; }
+    const frequency = category === 'Cycle' ? (form.cycleFrequency || 'monthly') : category === 'Weekly' ? 'weekly' : category === 'Daily' ? 'daily' : 'monthly';
+    const plan = {
+      id: uid(), name: form.name, category, frequency, amount: Number(form.amount),
+      targetAmount: category === 'Target' ? Number(form.targetAmount || 0) : undefined,
+      payouts: category === 'Cycle' ? [] : undefined,
+      startDate: form.startDate || todayISO(), memberIds: form.memberIds || [],
+    };
+    setPlans((p) => [...p, plan]);
+    setSelectedPlanId(plan.id);
+    closeModal();
+  };
+  const submitNewMember = () => {
+    if (!form.name) return;
+    const member = { id: uid(), name: form.name, phone: form.phone || '' };
+    setMembers((m) => [...m, member]);
+    setSelectedMemberId(member.id);
+    closeModal();
+  };
+  const submitNewLoanGiven = () => {
+    if (!form.borrower || !form.principal) return;
+    const loan = {
+      id: uid(), borrower: form.borrower, phone: form.phone || '', principal: Number(form.principal),
+      interestRate: Number(form.interestRate || 0),
+      dateGiven: form.dateGiven || todayISO(), dueDate: form.dueDate || todayISO(),
+      linkedPlanId: form.linkedPlanId || null, note: form.note || '', repayments: [],
+    };
+    setLoansGiven((l) => [loan, ...l]);
+    closeModal();
+  };
+  const submitNewLoanReceived = () => {
+    if (!form.lender || !form.principal) return;
+    const loan = {
+      id: uid(), lender: form.lender, phone: form.phone || '', principal: Number(form.principal),
+      interestRate: Number(form.interestRate || 0),
+      dateReceived: form.dateReceived || todayISO(), dueDate: form.dueDate || todayISO(),
+      linkedPlanId: form.linkedPlanId || null, note: form.note || '', refunds: [],
+    };
+    setLoansReceived((l) => [loan, ...l]);
+    closeModal();
+  };
+  const handleLogin = (user) => { setCurrentUser(user); setActiveModule('home'); setActiveTab('home'); flash(`Welcome back, ${user.name.split(' ')[0]}.`); };
+  const handleSignup = (user) => {
+    setUsers((u) => [...u, user]);
+    setSettings((s) => ({ ...s, businessName: user.businessName, ownerName: user.name }));
+    setCurrentUser(user);
+    setActiveModule('home'); setActiveTab('home');
+    flash('Account created \u2014 welcome to PocketLedger!');
+  };
+  const handleLogout = () => { setCurrentUser(null); setActiveModule('home'); setActiveTab('home'); };
+  const updateLoginEmail = () => {
+    if (!newLoginEmail || !newLoginEmail.includes('@')) { flash('Enter a valid email address.'); return; }
+    if (users.some((u) => u.id !== currentUser.id && u.email.toLowerCase() === newLoginEmail.toLowerCase())) {
+      flash('Another account already uses that email.'); return;
+    }
+    setUsers((prev) => prev.map((u) => u.id === currentUser.id ? { ...u, email: newLoginEmail } : u));
+    setCurrentUser((u) => ({ ...u, email: newLoginEmail }));
+    setNewLoginEmail('');
+    flash('Login email updated.');
+  };
+  const updateLoginPassword = () => {
+    if (!newLoginPassword || newLoginPassword.length < 4) { flash('Password must be at least 4 characters.'); return; }
+    setUsers((prev) => prev.map((u) => u.id === currentUser.id ? { ...u, password: newLoginPassword } : u));
+    setCurrentUser((u) => ({ ...u, password: newLoginPassword }));
+    setNewLoginPassword('');
+    flash('Password updated.');
+  };
+
+  const submitNewClient = () => {
+    if (!form.name) return;
+    const client = { id: uid(), name: form.name, phone: form.phone || '', email: form.email || '', address: form.address || '' };
+    setClients((c) => [...c, client]);
+    closeModal();
+    flash('Client added.');
+  };
+  const nextInvoiceNumber = () => {
+    const nums = invoices.map((i) => Number((i.number || '').replace(/\D/g, '')) || 0);
+    const next = (nums.length ? Math.max(...nums) : 1000) + 1;
+    return `INV-${next}`;
+  };
+  const addInvoiceItem = () => setForm((f) => ({ ...f, items: [...(f.items || []), { id: uid(), desc: '', qty: 1, price: '' }] }));
+  const updateInvoiceItem = (itemId, key, value) => setForm((f) => ({ ...f, items: (f.items || []).map((it) => it.id === itemId ? { ...it, [key]: value } : it) }));
+  const removeInvoiceItem = (itemId) => setForm((f) => ({ ...f, items: (f.items || []).filter((it) => it.id !== itemId) }));
+  const submitNewInvoice = () => {
+    if (!form.clientId || !(form.items || []).length) { flash('Pick a client and add at least one item.'); return; }
+    const invoice = {
+      id: uid(), number: form.number || nextInvoiceNumber(), clientId: form.clientId,
+      issueDate: form.issueDate || todayISO(), dueDate: form.dueDate || todayISO(),
+      items: form.items, status: 'sent', notes: form.notes || '', paidDate: null,
+    };
+    setInvoices((i) => [invoice, ...i]);
+    closeModal();
+    flash('Invoice created.');
+    setInvoiceDoc(invoice);
+  };
+  const nextReceiptNumber = () => {
+    const nums = receipts.map((r) => Number((r.receiptNo || '').replace(/\D/g, '')) || 0);
+    const next = (nums.length ? Math.max(...nums) : 2000) + 1;
+    return `RCT-${next}`;
+  };
+  const markInvoicePaid = (invoiceId) => {
+    const invoice = invoices.find((i) => i.id === invoiceId);
+    setInvoices((prev) => prev.map((i) => i.id === invoiceId ? { ...i, status: 'paid', paidDate: todayISO() } : i));
+    if (invoice) {
+      const rcpt = {
+        id: uid(), receiptNo: nextReceiptNumber(), invoiceId: invoice.id, clientId: invoice.clientId,
+        clientName: '', amount: invoiceTotal(invoice), date: todayISO(), note: `Payment for invoice ${invoice.number}`,
+      };
+      setReceipts((r) => [rcpt, ...r]);
+    }
+    flash('Invoice marked as paid \u2014 receipt generated.');
+  };
+  const submitManualReceipt = () => {
+    if (!form.clientId && !form.clientName) { flash('Pick a client or type a payer name.'); return; }
+    if (!form.amount) { flash('Enter an amount received.'); return; }
+    const rcpt = {
+      id: uid(), receiptNo: form.receiptNo || nextReceiptNumber(), invoiceId: null,
+      clientId: form.clientId || null, clientName: form.clientId ? '' : form.clientName,
+      amount: Number(form.amount), date: form.date || todayISO(), note: form.note || '',
+    };
+    setReceipts((r) => [rcpt, ...r]);
+    closeModal();
+    flash('Receipt issued.');
+    setPaymentReceiptDoc(rcpt);
+  };
+  const deleteReceipt = (receiptId) => {
+    if (!window.confirm('Delete this receipt? This cannot be undone.')) return;
+    setReceipts((prev) => prev.filter((r) => r.id !== receiptId));
+  };
+  const deleteInvoice = (invoiceId) => {
+    if (!window.confirm('Delete this invoice? This cannot be undone.')) return;
+    setInvoices((prev) => prev.filter((i) => i.id !== invoiceId));
+  };
+
+  const recordCyclePayout = (planId) => {
+    const plan = plans.find((p) => p.id === planId);
+    if (!plan || cycleComplete(plan)) return;
+    const pending = cyclePendingContributors(plan);
+    if (pending.length > 0) {
+      const names = pending.map((id) => memberById(id)?.name || 'a member').join(', ');
+      flash(`Can't pay out yet \u2014 waiting on ${names} to contribute this round.`);
+      return;
+    }
+    const recipientId = cycleCurrentRecipientId(plan);
+    const payout = { id: uid(), memberId: recipientId, amount: cyclePot(plan), date: todayISO() };
+    setPlans((prev) => prev.map((p) => p.id === planId ? { ...p, payouts: [...(p.payouts || []), payout] } : p));
+    const recipient = memberById(recipientId);
+    flash(`Cycle payout of ${fmt(cyclePot(plan))} recorded for ${recipient ? recipient.name : 'member'}.`);
+    setReceipt({ kind: 'cyclePayout', plan: { ...plan, payouts: [...(plan.payouts || []), payout] }, payout });
+  };
+  const restartCycle = (planId) => {
+    const plan = plans.find((p) => p.id === planId);
+    if (!plan || !cycleComplete(plan)) return;
+    setPlans((prev) => prev.map((p) => p.id === planId ? {
+      ...p,
+      cycleHistory: [...(p.cycleHistory || []), { payouts: p.payouts, startDate: p.startDate, endDate: todayISO() }],
+      payouts: [],
+      startDate: todayISO(),
+    } : p));
+    flash(`${plan.name} \u2014 new cycle started. Round 1 of ${plan.memberIds.length} begins today.`);
+  };
+  const addMemberToPlan = (planId, memberId) => {
+    if (!memberId) return;
+    setPlans((prev) => prev.map((p) => p.id === planId && !p.memberIds.includes(memberId) ? { ...p, memberIds: [...p.memberIds, memberId] } : p));
+  };
+  const addRepayment = (loanId, amount, date) => {
+    setLoansGiven((prev) => prev.map((l) => l.id === loanId ? { ...l, repayments: [...l.repayments, { id: uid(), amount, date }] } : l));
+    flash('Payment recorded.');
+  };
+  const addRefund = (loanId, amount, date) => {
+    setLoansReceived((prev) => prev.map((l) => l.id === loanId ? { ...l, refunds: [...l.refunds, { id: uid(), amount, date }] } : l));
+    flash('Refund recorded.');
+  };
+
+  /* ---------- import / export ---------- */
+  const exportBackup = () => {
+    const payload = { exportedAt: new Date().toISOString(), members, plans, contributions, loansGiven, loansReceived, clients, invoices, receipts, settings };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `pocketledger-backup-${todayISO()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    flash('Backup downloaded.');
+  };
+  const exportPlanCsv = (plan) => {
+    const periods = periodsForPlan(plan);
+    const header = ['Contributor', ...periods.map((p) => periodLabel(p, plan.frequency))].join(',');
+    const rows = plan.memberIds.map((memberId) => {
+      const cells = periods.map((period) => findContribution(plan.id, memberId, period) ? plan.amount : 0);
+      return [`"${memberById(memberId)?.name || ''}"`, ...cells].join(',');
+    });
+    const csv = [header, ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${plan.name.replace(/\s+/g, '-').toLowerCase()}-contributions.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  const triggerImport = () => importInputRef.current && importInputRef.current.click();
+  const handleImportFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (!data.members || !data.plans) throw new Error('Not a recognised PocketLedger backup file.');
+        setMembers(data.members || []);
+        setPlans(data.plans || []);
+        setContributions(data.contributions || []);
+        setLoansGiven(data.loansGiven || []);
+        setLoansReceived(data.loansReceived || []);
+        setClients(data.clients || []);
+        setInvoices(data.invoices || []);
+        setReceipts(data.receipts || []);
+        if (data.settings) setSettings((s) => ({ ...s, ...data.settings }));
+        flash('Backup imported successfully.');
+      } catch (err) {
+        flash('Could not read that file \u2014 is it a PocketLedger backup?');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+  const resetSampleData = () => {
+    if (!window.confirm('This replaces everything with the original sample data. Continue?')) return;
+    const p = seedPlans();
+    setMembers(seedMembers());
+    setPlans(p);
+    setContributions(seedContributions(p));
+    setLoansGiven(seedLoansGiven());
+    setLoansReceived(seedLoansReceived());
+    setClients(seedClients());
+    setInvoices(seedInvoices());
+    setReceipts(seedReceipts());
+    flash('Sample data restored.');
+  };
+  const clearAllData = () => {
+    if (!window.confirm('This deletes every plan, contributor, loan, client, invoice and receipt. This cannot be undone. Continue?')) return;
+    setMembers([]); setPlans([]); setContributions([]); setLoansGiven([]); setLoansReceived([]); setClients([]); setInvoices([]); setReceipts([]);
+    flash('All data cleared.');
+  };
+
+  /* ---------- WhatsApp messages ---------- */
+  const biodataMessage = (member) => {
+    const memberPlans = plans.filter((p) => p.memberIds.includes(member.id));
+    const lines = [
+      `*${settings.businessName}* \u2014 Contributor biodata`, '',
+      `Name: ${member.name}`,
+      `Phone: ${member.phone || 'N/A'}`,
+      `Total contributed: ${fmt(memberTotal(member.id))}`,
+      `Payment consistency: ${memberConsistency(member.id)}%`,
+      `Plans joined: ${memberPlans.length ? memberPlans.map((p) => p.name).join(', ') : 'None yet'}`,
+    ];
+    return lines.join('\n');
+  };
+  const reminderMessage = (person, item, key, dateField) => {
+    const out = outstandingOf(item, key);
+    const accrued = accruedOf(item, key);
+    const verb = key === 'repayments' ? 'repayment' : 'refund';
+    const lines = [
+      `Hello ${person}, this is a friendly reminder from ${settings.businessName}.`,
+      `Your ${verb} of ${fmt(out)} (principal ${fmt(item.principal)}${accrued > 0 ? ` + accrued interest ${fmt(accrued)}` : ''}) is due on ${new Date(item.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.`,
+      `Kindly reach out if you'd like to arrange this. Thank you!`,
+    ];
+    return lines.join('\n');
+  };
+
+  const invoiceMessage = (inv) => {
+    const client = clientById(inv.clientId);
+    const total = invoiceTotal(inv);
+    const status = invoiceStatusOf(inv);
+    const lines = [
+      `*${settings.businessName}*${settings.rcNumber ? ` (RC ${settings.rcNumber})` : ''}`, '',
+      `Invoice: ${inv.number}`,
+      `Bill to: ${client ? client.name : ''}`,
+      `Issue date: ${new Date(inv.issueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`,
+      `Due date: ${new Date(inv.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`,
+      '',
+      ...inv.items.map((it) => `${it.desc} \u2014 ${it.qty} x ${fmt(it.price)} = ${fmt(it.qty * it.price)}`),
+      '',
+      `Total: ${fmt(total)}`,
+      `Status: ${INVOICE_STATUS_LABEL[status]}`,
+    ];
+    if (settings.accountNumber) lines.push('', `Pay to: ${settings.bankName || ''} ${settings.accountNumber} (${settings.accountName || settings.businessName})`);
+    return lines.join('\n');
+  };
+  const invoiceReminderMessage = (inv) => {
+    const client = clientById(inv.clientId);
+    const total = invoiceTotal(inv);
+    return [
+      `Hello ${client ? client.name : ''}, this is a friendly reminder from ${settings.businessName}.`,
+      `Invoice ${inv.number} for ${fmt(total)} is due on ${new Date(inv.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.`,
+      `Kindly reach out if you'd like to arrange this. Thank you!`,
+    ].join('\n');
+  };
+
+  /* ============================== tab renders ============================== */
+  const renderThriftOverview = () => (
+    <>
+      <SectionHeader eyebrow="Thrift" title="Today's thrift position" />
+      <div className="stat-grid">
+        <StatCard label="Total thrift collected" value={fmt(totalCollected)} icon={PiggyBank} tone="green" sub={`${activePlansCount} plan(s) running`} />
+        <StatCard label="Rotating cycles in progress" value={cyclePlansCount} icon={Repeat} tone="brick" sub="Cycle plans awaiting payout" />
+        <StatCard label="Contributors" value={members.length} icon={Users} tone="steel" sub="Across all plans" />
+        <StatCard label="Thrift alerts" value={moduleAlerts(['Thrift contributions']).length} icon={AlertTriangle} tone="gold" sub="Needs attention" />
+      </div>
+      <div className="two-col">
+        <div className="panel">
+          <div className="panel-title">Contributions collected \u2014 last 8 weeks</div>
+          <div style={{ width: '100%', height: 220 }}>
+            <ResponsiveContainer>
+              <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="fillGreen" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#1F7A5C" stopOpacity={0.5} />
+                    <stop offset="95%" stopColor="#1F7A5C" stopOpacity={0.03} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#E4DDC9" />
+                <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#5B6478' }} />
+                <YAxis tick={{ fontSize: 11, fill: '#5B6478' }} width={40} />
+                <Tooltip formatter={(v) => fmt(v)} contentStyle={{ borderRadius: 8, border: '1px solid #E4DDC9', fontFamily: 'IBM Plex Mono, monospace', fontSize: 12 }} />
+                <Area type="monotone" dataKey="total" stroke="#1F7A5C" strokeWidth={2} fill="url(#fillGreen)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="panel">
+          <div className="panel-title">Recent thrift activity</div>
+          {recentActivity.filter((a) => a.scope === 'thrift').length === 0 ? <EmptyState text="No thrift activity recorded yet." /> : (
+            <ul className="activity-list">
+              {recentActivity.filter((a) => a.scope === 'thrift').slice(0, 7).map((a, i) => (
+                <li key={i} className="activity-item">
+                  <span className={`dot dot-${a.kind}`} />
+                  <span className="activity-text">{a.text}</span>
+                  <span className="activity-date kb-mono">{new Date(a.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+      <div className="panel" style={{ marginTop: 20 }}>
+        <div className="panel-title-row">
+          <div className="panel-title">Needs attention</div>
+          <button className="link-btn" onClick={() => setActiveTab('alerts')}>View all <ChevronRight size={14} /></button>
+        </div>
+        {moduleAlerts(['Thrift contributions']).length === 0 ? <EmptyState text="Nothing urgent. Every plan is up to date." /> : (
+          <ul className="alert-list">
+            {moduleAlerts(['Thrift contributions']).slice(0, 3).map((a) => (
+              <li key={a.id} className={`alert-row sev-${a.severity}`}>
+                <AlertTriangle size={15} />
+                <span>{a.text}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </>
+  );
+
+  const renderLoansOverview = () => (
+    <>
+      <SectionHeader eyebrow="Loan tracking" title="Today's loan position" />
+      <div className="stat-grid">
+        <StatCard label="Owed to you (loans given)" value={fmt(totalOwedToMe)} icon={ArrowDownRight} tone="steel" sub={`${loansGiven.length} loan(s) recorded`} />
+        <StatCard label="You owe (loans received)" value={fmt(totalIOwe)} icon={ArrowUpRight} tone="brick" sub={`${loansReceived.length} loan(s) recorded`} />
+        <StatCard label="Total loans on file" value={loansGiven.length + loansReceived.length} icon={HandCoins} tone="gold" sub="Given + received" />
+        <StatCard label="Loan alerts" value={moduleAlerts(['Loans given', 'Loans received']).length} icon={AlertTriangle} tone="green" sub="Needs attention" />
+      </div>
+      <div className="two-col">
+        <div className="panel">
+          <div className="panel-title">Recent loan activity</div>
+          {recentActivity.filter((a) => a.scope === 'loans').length === 0 ? <EmptyState text="No loan activity recorded yet." /> : (
+            <ul className="activity-list">
+              {recentActivity.filter((a) => a.scope === 'loans').slice(0, 8).map((a, i) => (
+                <li key={i} className="activity-item">
+                  <span className={`dot dot-${a.kind}`} />
+                  <span className="activity-text">{a.text}</span>
+                  <span className="activity-date kb-mono">{new Date(a.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="panel">
+          <div className="panel-title-row">
+            <div className="panel-title">Needs attention</div>
+            <button className="link-btn" onClick={() => setActiveTab('alerts')}>View all <ChevronRight size={14} /></button>
+          </div>
+          {moduleAlerts(['Loans given', 'Loans received']).length === 0 ? <EmptyState text="Nothing urgent. Every loan is up to date." /> : (
+            <ul className="alert-list">
+              {moduleAlerts(['Loans given', 'Loans received']).slice(0, 5).map((a) => (
+                <li key={a.id} className={`alert-row sev-${a.severity}`}>
+                  <AlertTriangle size={15} />
+                  <span>{a.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </>
+  );
+
+  const renderPaymentsOverview = () => (
+    <>
+      <SectionHeader eyebrow="Payment portal" title="Today's business payments" />
+      <div className="stat-grid">
+        <StatCard label="Total invoiced" value={fmt(totalInvoiced)} icon={FileText} tone="steel" sub={`${invoices.length} invoice(s)`} />
+        <StatCard label="Total received" value={fmt(totalReceived)} icon={Receipt} tone="green" sub={`${receipts.length} receipt(s)`} />
+        <StatCard label="Outstanding" value={fmt(totalOutstanding)} icon={AlertTriangle} tone="brick" sub="Across unpaid invoices" />
+        <StatCard label="Clients" value={clients.length} icon={Users} tone="gold" sub="On file" />
+      </div>
+      <div className="two-col">
+        <div className="panel">
+          <div className="panel-title">Recent payment activity</div>
+          {recentActivity.filter((a) => a.scope === 'payments').length === 0 ? <EmptyState text="No payments recorded yet." /> : (
+            <ul className="activity-list">
+              {recentActivity.filter((a) => a.scope === 'payments').slice(0, 8).map((a, i) => (
+                <li key={i} className="activity-item">
+                  <span className={`dot dot-${a.kind}`} />
+                  <span className="activity-text">{a.text}</span>
+                  <span className="activity-date kb-mono">{new Date(a.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="panel">
+          <div className="panel-title-row">
+            <div className="panel-title">Needs attention</div>
+            <button className="link-btn" onClick={() => setActiveTab('alerts')}>View all <ChevronRight size={14} /></button>
+          </div>
+          {moduleAlerts(['Payments']).length === 0 ? <EmptyState text="Nothing urgent. Every invoice is up to date." /> : (
+            <ul className="alert-list">
+              {moduleAlerts(['Payments']).slice(0, 5).map((a) => (
+                <li key={a.id} className={`alert-row sev-${a.severity}`}>
+                  <AlertTriangle size={15} />
+                  <span>{a.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </>
+  );
+
+
+  const renderPlans = () => {
+    const plan = planById(selectedPlanId) || plans[0];
+    const periods = plan ? periodsForPlan(plan) : [];
+    const unassigned = plan ? members.filter((m) => !plan.memberIds.includes(m.id)) : [];
+    return (
+      <>
+        <SectionHeader eyebrow="Personalised strategies" title="Thrift plans"
+          action={<button className="btn btn-primary" onClick={() => openModal('newPlan', { memberIds: [] })}><Plus size={16} /> New thrift plan</button>} />
+
+        <div className="plan-card-grid">
+          {plans.map((p) => {
+            const total = planTotal(p.id);
+            return (
+              <div key={p.id} className={`plan-card ${p.id === selectedPlanId ? 'plan-card-active' : ''}`} onClick={() => setSelectedPlanId(p.id)}>
+                <div className="plan-card-top">
+                  <CategoryTag category={p.category} />
+                  <span className="kb-mono plan-amount">{fmt(p.amount)}</span>
+                </div>
+                <div className="plan-card-name kb-display">{p.name}</div>
+                <div className="plan-card-meta">{p.memberIds.length} contributor(s) \u00b7 {p.frequency}</div>
+                {p.category === 'Target' ? (
+                  <ProgressBar value={total} max={p.targetAmount || 1} />
+                ) : p.category === 'Cycle' ? (
+                  <div className="plan-card-total kb-mono">{cycleRoundsDone(p)} of {p.memberIds.length} paid out</div>
+                ) : (
+                  <div className="plan-card-total kb-mono">{fmt(total)} collected</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {plan && (
+          <div className="panel" style={{ marginTop: 24 }}>
+            <div className="panel-title-row">
+              <div>
+                <div className="panel-title">{plan.name}</div>
+                <div className="panel-sub">Tap a cell to mark a round as paid \u00b7 {fmt(plan.amount)} per round</div>
+              </div>
+              <div className="inline-add">
+                <select className="kb-input" defaultValue="" onChange={(e) => { addMemberToPlan(plan.id, e.target.value); e.target.value = ''; }}>
+                  <option value="" disabled>Add contributor to plan\u2026</option>
+                  {unassigned.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {plan.category === 'Target' && (
+              <div style={{ marginBottom: 16 }}>
+                <ProgressBar value={planTotal(plan.id)} max={plan.targetAmount} />
+                <div className="panel-sub" style={{ marginTop: 6 }}>{fmt(planTotal(plan.id))} of {fmt(plan.targetAmount)} target</div>
+              </div>
+            )}
+
+            {plan.category === 'Cycle' && (
+              <div className="cycle-panel">
+                <div className="cycle-panel-top">
+                  <div>
+                    <div className="panel-sub">Round pot ({plan.memberIds.length} members &times; {fmt(plan.amount)})</div>
+                    <div className="cycle-pot kb-mono">{fmt(cyclePot(plan))}</div>
+                  </div>
+                  {cycleComplete(plan) ? (
+                    <div className="cycle-turn">
+                      <Stamp status="completed" label="Cycle complete" />
+                      <button className="btn btn-secondary btn-small" style={{ marginTop: 8 }} onClick={() => restartCycle(plan.id)}>
+                        <RotateCcw size={13} /> Start new cycle
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="cycle-turn">
+                      <div className="panel-sub">This round's payout goes to</div>
+                      <div className="cycle-turn-name kb-display">{memberById(cycleCurrentRecipientId(plan))?.name}</div>
+                      {cyclePendingContributors(plan).length > 0 ? (
+                        <div className="panel-sub" style={{ color: 'var(--brick)', marginTop: 6, maxWidth: 240, textAlign: 'right' }}>
+                          Waiting on {cyclePendingContributors(plan).map((id) => memberById(id)?.name || 'a member').join(', ')} to pay this round
+                        </div>
+                      ) : (
+                        <button className="btn btn-secondary btn-small" style={{ marginTop: 8 }} onClick={() => recordCyclePayout(plan.id)}>
+                          <HandCoins size={13} /> Record this round's payout
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="panel-sub" style={{ marginTop: 10 }}>
+                  {cycleRoundsDone(plan)} of {plan.memberIds.length} member(s) paid out so far
+                  {plan.cycleHistory && plan.cycleHistory.length > 0 ? ` \u00b7 ${plan.cycleHistory.length} previous cycle(s) completed` : ''}
+                </div>
+                {plan.payouts && plan.payouts.length > 0 && (
+                  <div className="cycle-history">
+                    {plan.payouts.map((po, i) => (
+                      <div key={po.id} className="cycle-history-row">
+                        <span>Round {i + 1} &middot; {memberById(po.memberId)?.name}</span>
+                        <span className="kb-mono">{fmt(po.amount)}</span>
+                        <button className="btn btn-ghost btn-small" onClick={() => setReceipt({ kind: 'cyclePayout', plan, payout: po })}><Receipt size={12} /> Receipt</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="grid-scroll">
+              <table className="contrib-grid">
+                <thead>
+                  <tr>
+                    <th className="member-col">Contributor</th>
+                    {periods.map((p) => <th key={p} className="kb-mono">{periodLabel(p, plan.frequency)}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {plan.memberIds.length === 0 ? (
+                    <tr><td colSpan={periods.length + 1}><EmptyState text="No contributors on this plan yet." /></td></tr>
+                  ) : plan.memberIds.map((memberId) => (
+                    <tr key={memberId}>
+                      <td className="member-col">{memberById(memberId)?.name}</td>
+                      {periods.map((period) => {
+                        const paid = !!findContribution(plan.id, memberId, period);
+                        const isToday = period === periods[periods.length - 1];
+                        return (
+                          <td key={period}>
+                            <button
+                              className={`cell-dot ${paid ? 'cell-paid' : 'cell-unpaid'} ${isToday ? 'cell-today' : ''}`}
+                              title={paid ? 'Paid \u2014 tap to undo' : 'Tap to mark paid'}
+                              onClick={() => toggleContribution(plan.id, memberId, period, plan.amount)}
+                            >
+                              {paid ? <CheckCircle2 size={15} /> : null}
+                            </button>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  };
+
+  const renderContributors = () => {
+    const filtered = members.filter((m) => m.name.toLowerCase().includes(memberSearch.toLowerCase()));
+    const selected = memberById(selectedMemberId) || members[0];
+    const memberPlans = selected ? plans.filter((p) => p.memberIds.includes(selected.id)) : [];
+    const history = selected ? contributions.filter((c) => c.memberId === selected.id).sort((a, b) => new Date(b.date) - new Date(a.date)) : [];
+    return (
+      <>
+        <SectionHeader eyebrow="Everyone in the book" title="Contributors"
+          action={<button className="btn btn-primary" onClick={() => openModal('newMember')}><Plus size={16} /> Add contributor</button>} />
+        <div className="master-detail">
+          <div className="panel master-list">
+            <div className="search-box">
+              <Search size={14} />
+              <input placeholder="Search contributors\u2026" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
+            </div>
+            <ul className="member-list">
+              {filtered.map((m) => (
+                <li key={m.id} className={m.id === selected?.id ? 'member-row-active' : ''} onClick={() => setSelectedMemberId(m.id)}>
+                  <div className="member-avatar kb-display">{m.name.charAt(0)}</div>
+                  <div>
+                    <div className="member-name">{m.name}</div>
+                    <div className="member-sub kb-mono">{fmt(memberTotal(m.id))} total</div>
+                  </div>
+                  <ChevronRight size={15} className="chev" />
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {selected && (
+            <div className="panel detail-panel">
+              <div className="detail-head">
+                <div className="member-avatar-lg kb-display">{selected.name.charAt(0)}</div>
+                <div style={{ flex: 1 }}>
+                  <div className="kb-display detail-name">{selected.name}</div>
+                  <div className="panel-sub"><Phone size={12} style={{ verticalAlign: '-2px' }} /> {selected.phone || 'No phone on file'}</div>
+                </div>
+                <button className="btn btn-small btn-ghost" onClick={() => shareToWhatsApp(selected.phone, biodataMessage(selected))}>
+                  <MessageCircle size={13} /> Share biodata
+                </button>
+              </div>
+              <div className="detail-stats">
+                <div><span className="kb-mono">{fmt(memberTotal(selected.id))}</span><label>Total contributed</label></div>
+                <div><span className="kb-mono">{memberConsistency(selected.id)}%</span><label>Payment consistency</label></div>
+                <div><span className="kb-mono">{memberPlans.length}</span><label>Plans joined</label></div>
+              </div>
+              <div className="tag-row">
+                {memberPlans.map((p) => <CategoryTag key={p.id} category={p.category} />)}
+                {memberPlans.length === 0 && <span className="panel-sub">Not on any thrift plan yet.</span>}
+              </div>
+              <div className="panel-title" style={{ marginTop: 18 }}>Contribution history</div>
+              {history.length === 0 ? <EmptyState text="No contributions recorded yet." /> : (
+                <table className="history-table">
+                  <thead><tr><th>Date</th><th>Plan</th><th>Amount</th><th></th></tr></thead>
+                  <tbody>
+                    {history.slice(0, 12).map((h) => (
+                      <tr key={h.id}>
+                        <td className="kb-mono">{new Date(h.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                        <td>{planById(h.planId)?.name}</td>
+                        <td className="kb-mono">{fmt(h.amount)}</td>
+                        <td><button className="link-btn receipt-link" onClick={() => setReceipt({ kind: 'contribution', member: selected, contribution: h })}><Receipt size={12} /> Receipt</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+        </div>
+      </>
+    );
+  };
+
+  // Groups every loan by the person's name, so someone with several concurrent
+  // loans (or loans taken at different times) shows as one person with a rolled-up
+  // total, and each individual loan keeps its own separate repayment trail.
+  const groupLoans = (list, personField, key) => {
+    const dateField = personField === 'borrower' ? 'dateGiven' : 'dateReceived';
+    const rank = { overdue: 0, 'due-soon': 1, active: 2, completed: 3 };
+    const map = new Map();
+    list.forEach((l) => {
+      const name = (l[personField] || '').trim();
+      const mapKey = name.toLowerCase();
+      if (!map.has(mapKey)) map.set(mapKey, { name, loans: [] });
+      map.get(mapKey).loans.push(l);
+    });
+    const groups = Array.from(map.values()).map((g) => {
+      const loans = [...g.loans].sort((a, b) => new Date(b[dateField]) - new Date(a[dateField]));
+      const totalPrincipal = loans.reduce((s, l) => s + l.principal, 0);
+      const totalOutstanding = loans.reduce((s, l) => s + outstandingOf(l, key), 0);
+      const worstRank = Math.min(...loans.map((l) => rank[loanStatus(l, key)]));
+      return { name: g.name, loans, totalPrincipal, totalOutstanding, worstRank };
+    });
+    groups.sort((a, b) => a.worstRank - b.worstRank || b.totalOutstanding - a.totalOutstanding);
+    return groups;
+  };
+
+  const renderLoanGroups = (list, key, personField, addFn, addLabel, emptyText, search, setSearch) => {
+    const dateField = personField === 'borrower' ? 'dateGiven' : 'dateReceived';
+    const groups = groupLoans(list, personField, key).filter((g) => g.name.toLowerCase().includes(search.toLowerCase()));
+    return (
+      <>
+        <div className="search-box loan-search">
+          <Search size={14} />
+          <input placeholder="Search by name\u2026" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        {list.length === 0 ? <EmptyState text={emptyText} /> : groups.length === 0 ? <EmptyState text="No match found." /> : (
+          <div className="loan-groups">
+            {groups.map((g) => (
+              <div key={g.name} className="person-group">
+                <div className="person-group-head">
+                  <div className="member-avatar kb-display">{g.name.charAt(0)}</div>
+                  <div className="person-group-info">
+                    <div className="person-group-name kb-display">{g.name}</div>
+                    <div className="panel-sub">{g.loans.length} loan{g.loans.length > 1 ? 's' : ''} \u00b7 {fmt(g.totalPrincipal)} total principal given{personField === 'lender' ? ' to you' : ''}</div>
+                  </div>
+                  <button className="btn btn-small btn-ghost" onClick={() => shareToWhatsApp(g.loans[0].phone, biodataMessageForLoanPerson(g))}>
+                    <MessageCircle size={13} /> Biodata
+                  </button>
+                  <div className="kb-mono outstanding"><span>total outstanding</span>{fmt(g.totalOutstanding)}</div>
+                </div>
+                <div className="loan-list">
+                  {g.loans.map((l) => {
+                    const status = loanStatus(l, key);
+                    const out = outstandingOf(l, key);
+                    const accrued = accruedOf(l, key);
+                    const paid = paidOf(l, key);
+                    const isOpen = expandedLoan === l.id;
+                    const plan = l.linkedPlanId ? planById(l.linkedPlanId) : null;
+                    const person = l[personField];
+                    return (
+                      <div key={l.id} className="loan-card">
+                        <div className="loan-card-top" onClick={() => setExpandedLoan(isOpen ? null : l.id)}>
+                          <div>
+                            <div className="loan-name kb-display kb-mono">{fmt(l.principal)}</div>
+                            <div className="panel-sub">
+                              given {new Date(l[dateField]).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                              {' \u00b7 due '}{new Date(l.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                              {l.interestRate > 0 && <span className="kb-mono"> \u00b7 {l.interestRate}%/yr</span>}
+                              {plan && <span className="linked-tag"><Link2 size={11} /> {plan.name}</span>}
+                            </div>
+                          </div>
+                          <div className="loan-card-right">
+                            <div className="kb-mono outstanding"><span>outstanding</span>{fmt(out)}</div>
+                            <Stamp status={status} />
+                            <ChevronDown size={16} className={`chev ${isOpen ? 'chev-open' : ''}`} />
+                          </div>
+                        </div>
+                        {isOpen && (
+                          <div className="loan-card-body">
+                            {l.note && <div className="loan-note">\u201c{l.note}\u201d</div>}
+                            <div className="balance-breakdown">
+                              <div><label>Principal</label><span className="kb-mono">{fmt(l.principal)}</span></div>
+                              {accrued > 0 && <div><label>Accrued interest</label><span className="kb-mono">{fmt(accrued)}</span></div>}
+                              <div><label>Paid so far</label><span className="kb-mono">{fmt(paid)}</span></div>
+                              <div className="balance-total"><label>Outstanding</label><span className="kb-mono">{fmt(out)}</span></div>
+                            </div>
+                            <div className="loan-actions">
+                              {out > 0 && (
+                                <button className="btn btn-small btn-ghost" onClick={() => shareToWhatsApp(l.phone, reminderMessage(person, l, key, dateField))}>
+                                  <Send size={13} /> Send reminder
+                                </button>
+                              )}
+                            </div>
+                            <div className="panel-title" style={{ fontSize: 13, marginTop: 12 }}>Payment history</div>
+                            {(l[key] || []).length === 0 ? <EmptyState text="No payments recorded yet." /> : (
+                              <ul className="payment-history">
+                                {l[key].map((r) => (
+                                  <li key={r.id}>
+                                    <CheckCircle2 size={14} className="pay-icon" />
+                                    <span className="kb-mono">{fmt(r.amount)}</span>
+                                    <span className="panel-sub">on {new Date(r.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                                    <button className="link-btn receipt-link" onClick={() => setReceipt({ kind: 'loan', loan: l, key, personField, dateField, payment: r })}>
+                                      <Receipt size={12} /> Receipt
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                            {out > 0 && <AddPaymentRow label={addLabel} onAdd={(amount, date) => addFn(l.id, amount, date)} />}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </>
+    );
+  };
+
+  const biodataMessageForLoanPerson = (group) => {
+    const lines = [
+      `*${settings.businessName}* \u2014 Account summary`, '',
+      `Name: ${group.name}`,
+      `Loans on record: ${group.loans.length}`,
+      `Total principal: ${fmt(group.totalPrincipal)}`,
+      `Total outstanding: ${fmt(group.totalOutstanding)}`,
+    ];
+    return lines.join('\n');
+  };
+
+  const renderLoansGiven = () => (
+    <>
+      <SectionHeader eyebrow="Money out" title="Loans given to individuals"
+        action={<button className="btn btn-primary" onClick={() => openModal('newLoanGiven')}><Plus size={16} /> New loan</button>} />
+      {renderLoanGroups(loansGiven, 'repayments', 'borrower', addRepayment, 'Record payment', 'No loans given out yet.', loanGivenSearch, setLoanGivenSearch)}
+    </>
+  );
+
+  const renderLoansReceived = () => (
+    <>
+      <SectionHeader eyebrow="Money in" title="Personal loans received"
+        action={<button className="btn btn-primary" onClick={() => openModal('newLoanReceived')}><Plus size={16} /> New loan</button>} />
+      {renderLoanGroups(loansReceived, 'refunds', 'lender', addRefund, 'Record refund', 'No personal loans received yet.', loanReceivedSearch, setLoanReceivedSearch)}
+    </>
+  );
+
+  const renderHome = () => (
+    <HomeScreen
+      user={currentUser}
+      settings={settings}
+      stats={{ plans: plans.length, loans: loansGiven.length + loansReceived.length, invoices: invoices.length }}
+      onPick={openModule}
+    />
+  );
+
+  const renderClients = () => {
+    const filtered = clients.filter((c) => c.name.toLowerCase().includes(clientSearch.toLowerCase()));
+    return (
+      <>
+        <SectionHeader eyebrow="Who you invoice" title="Clients"
+          action={<button className="btn btn-primary" onClick={() => openModal('newClient')}><Plus size={16} /> Add client</button>} />
+        <div className="search-box loan-search">
+          <Search size={14} />
+          <input placeholder="Search clients\u2026" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
+        </div>
+        {filtered.length === 0 ? <EmptyState text="No clients yet \u2014 add your first one." /> : (
+          <div className="plan-card-grid">
+            {filtered.map((c) => {
+              const clientInvoices = invoices.filter((i) => i.clientId === c.id);
+              const owed = clientInvoices.filter((i) => i.status !== 'paid').reduce((s, i) => s + invoiceTotal(i), 0);
+              return (
+                <div key={c.id} className="plan-card client-card">
+                  <div className="plan-card-top"><span className="plan-card-name">{c.name}</span></div>
+                  <div className="plan-card-meta"><Phone size={12} style={{ verticalAlign: '-2px' }} /> {c.phone || 'No phone'}</div>
+                  {c.email && <div className="plan-card-meta"><Mail size={12} style={{ verticalAlign: '-2px' }} /> {c.email}</div>}
+                  {c.address && <div className="plan-card-meta"><MapPin size={12} style={{ verticalAlign: '-2px' }} /> {c.address}</div>}
+                  <div className="plan-card-total" style={{ marginTop: 8 }}>{clientInvoices.length} invoice(s) &middot; {fmt(owed)} outstanding</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </>
+    );
+  };
+
+  const renderInvoices = () => {
+    const filtered = invoices.filter((i) => {
+      const client = clientById(i.clientId);
+      const name = (client ? client.name : '').toLowerCase();
+      return name.includes(invoiceSearch.toLowerCase()) || i.number.toLowerCase().includes(invoiceSearch.toLowerCase());
+    }).sort((a, b) => new Date(b.issueDate) - new Date(a.issueDate));
+    return (
+      <>
+        <SectionHeader eyebrow="Bill your clients" title="Invoices"
+          action={<button className="btn btn-primary" onClick={() => openModal('newInvoice', { items: [{ id: uid(), desc: '', qty: 1, price: '' }], issueDate: todayISO() })}><Plus size={16} /> New invoice</button>} />
+        <div className="search-box loan-search">
+          <Search size={14} />
+          <input placeholder="Search by client or invoice number\u2026" value={invoiceSearch} onChange={(e) => setInvoiceSearch(e.target.value)} />
+        </div>
+        {clients.length === 0 && <div className="panel-sub" style={{ marginBottom: 12 }}>Add a client first, then create an invoice for them.</div>}
+        {filtered.length === 0 ? <EmptyState text="No invoices yet." /> : (
+          <div className="loan-list">
+            {filtered.map((inv) => {
+              const client = clientById(inv.clientId);
+              const status = invoiceStatusOf(inv);
+              const total = invoiceTotal(inv);
+              return (
+                <div key={inv.id} className="loan-card">
+                  <div className="loan-card-top" onClick={() => setInvoiceDoc(inv)}>
+                    <div>
+                      <span className="loan-name">{inv.number} &middot; {client ? client.name : 'Unknown client'}</span>
+                      <div className="plan-card-meta">Due {new Date(inv.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
+                    </div>
+                    <div className="loan-card-right">
+                      <Stamp status={status === 'sent' ? 'active' : status === 'overdue' ? 'overdue' : status === 'paid' ? 'completed' : 'due-soon'} />
+                      <div className="outstanding kb-mono">{fmt(total)}<span>total</span></div>
+                      <ChevronRight size={15} className="chev" />
+                    </div>
+                  </div>
+                  <div className="loan-card-body">
+                    <div className="loan-actions" style={{ marginTop: 12, flexWrap: 'wrap' }}>
+                      <button className="btn btn-outline btn-small" onClick={() => setInvoiceDoc(inv)}><FileText size={13} /> View / share</button>
+                      {status !== 'paid' && <button className="btn btn-secondary btn-small" onClick={() => markInvoicePaid(inv.id)}><CheckCircle2 size={13} /> Mark paid</button>}
+                      {status !== 'paid' && client?.phone && <button className="btn btn-ghost btn-small" onClick={() => shareToWhatsApp(client.phone, invoiceReminderMessage(inv))}><Bell size={13} /> Send reminder</button>}
+                      <button className="btn btn-danger btn-small" onClick={() => deleteInvoice(inv.id)}><Trash2 size={13} /> Delete</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </>
+    );
+  };
+
+  const renderReceipts = () => {
+    const filtered = receipts.filter((r) => {
+      const client = clientById(r.clientId);
+      const name = (client ? client.name : r.clientName || '').toLowerCase();
+      return name.includes(receiptSearch.toLowerCase()) || r.receiptNo.toLowerCase().includes(receiptSearch.toLowerCase());
+    }).sort((a, b) => new Date(b.date) - new Date(a.date));
+    return (
+      <>
+        <SectionHeader eyebrow="Proof of payment" title="Receipts"
+          action={<button className="btn btn-primary" onClick={() => openModal('newReceipt', { date: todayISO() })}><Plus size={16} /> Issue receipt</button>} />
+        <div className="search-box loan-search">
+          <Search size={14} />
+          <input placeholder="Search by payer or receipt number\u2026" value={receiptSearch} onChange={(e) => setReceiptSearch(e.target.value)} />
+        </div>
+        {filtered.length === 0 ? <EmptyState text="No receipts yet \u2014 they're generated automatically when you mark an invoice paid, or issue one directly." /> : (
+          <div className="loan-list">
+            {filtered.map((r) => {
+              const client = clientById(r.clientId);
+              const invoice = r.invoiceId ? invoiceById(r.invoiceId) : null;
+              return (
+                <div key={r.id} className="loan-card">
+                  <div className="loan-card-top" onClick={() => setPaymentReceiptDoc(r)}>
+                    <div>
+                      <span className="loan-name">{r.receiptNo} &middot; {client ? client.name : (r.clientName || 'Walk-in customer')}</span>
+                      <div className="plan-card-meta">{new Date(r.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}{invoice ? ` \u00b7 for ${invoice.number}` : ''}</div>
+                    </div>
+                    <div className="loan-card-right">
+                      <Stamp status="completed" label="Paid" />
+                      <div className="outstanding kb-mono">{fmt(r.amount)}<span>received</span></div>
+                      <ChevronRight size={15} className="chev" />
+                    </div>
+                  </div>
+                  <div className="loan-card-body">
+                    <div className="loan-actions" style={{ marginTop: 12, flexWrap: 'wrap' }}>
+                      <button className="btn btn-outline btn-small" onClick={() => setPaymentReceiptDoc(r)}><Receipt size={13} /> View / share</button>
+                      <button className="btn btn-danger btn-small" onClick={() => deleteReceipt(r.id)}><Trash2 size={13} /> Delete</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </>
+    );
+  };
+
+  const renderAlerts = () => {
+    const groups = ['Payments', 'Loans given', 'Loans received', 'Thrift contributions'];
+    return (
+      <>
+        <SectionHeader eyebrow="Stay on top of it" title="Alerts & notifications" />
+        {alerts.length === 0 ? <EmptyState text="You're all caught up \u2014 no open alerts." /> : groups.map((g) => {
+          const items = alerts.filter((a) => a.group === g);
+          if (items.length === 0) return null;
+          return (
+            <div key={g} className="panel" style={{ marginBottom: 16 }}>
+              <div className="panel-title">{g}</div>
+              <ul className="alert-list">
+                {items.map((a) => (
+                  <li key={a.id} className={`alert-row sev-${a.severity}`}>
+                    <AlertTriangle size={15} />
+                    <span>{a.text}</span>
+                    <button className="link-btn" onClick={() => setDismissed((d) => [...d, a.id])}>Mark handled</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </>
+    );
+  };
+
+  const renderSettings = () => (
+    <>
+      <SectionHeader eyebrow="Configure your ledger" title="Settings" />
+
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div className="panel-title">Login details</div>
+        <div className="panel-sub" style={{ marginBottom: 12 }}>You're logged in as <strong>{currentUser.email}</strong>. Change your email or password below.</div>
+        <div className="field-row">
+          <div className="field"><label>New login email</label>
+            <input className="kb-input" type="email" value={newLoginEmail} onChange={(e) => setNewLoginEmail(e.target.value)} placeholder={currentUser.email} />
+          </div>
+          <div className="field" style={{ flex: '0 0 auto', alignSelf: 'flex-end' }}>
+            <button className="btn btn-outline btn-small" onClick={updateLoginEmail}>Update email</button>
+          </div>
+        </div>
+        <div className="field-row">
+          <div className="field"><label>New password</label>
+            <input className="kb-input" type="password" value={newLoginPassword} onChange={(e) => setNewLoginPassword(e.target.value)} placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" />
+          </div>
+          <div className="field" style={{ flex: '0 0 auto', alignSelf: 'flex-end' }}>
+            <button className="btn btn-outline btn-small" onClick={updateLoginPassword}>Update password</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="two-col">
+        <div className="panel">
+          <div className="panel-title">Business & receipt details</div>
+          <div className="field"><label>Business / ledger name</label>
+            <input className="kb-input" value={settings.businessName} onChange={(e) => setSettings((s) => ({ ...s, businessName: e.target.value }))} placeholder="Only needed for Payments & Thrift receipts" />
+            <div className="field-hint">Only required if you use the Payment Portal (invoices/receipts) or share Thrift receipts \u2014 loan tracking works fine without it.</div>
+          </div>
+          <div className="field"><label>Your name (shown on receipts)</label>
+            <input className="kb-input" value={settings.ownerName} onChange={(e) => setSettings((s) => ({ ...s, ownerName: e.target.value }))} placeholder="Optional" />
+          </div>
+          <div className="field-row">
+            <div className="field"><label>Currency symbol</label>
+              <input className="kb-input" value={settings.currencySymbol} onChange={(e) => setSettings((s) => ({ ...s, currencySymbol: e.target.value }))} style={{ width: 80 }} />
+            </div>
+            <div className="field"><label>WhatsApp country code</label>
+              <input className="kb-input" value={settings.countryCode} onChange={(e) => setSettings((s) => ({ ...s, countryCode: e.target.value.replace(/\D/g, '') }))} placeholder="234" />
+            </div>
+          </div>
+          <div className="panel-sub">Used to normalise phone numbers (e.g. 0803\u2026 \u2192 {settings.countryCode}803\u2026) when opening WhatsApp share links.</div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-title">Theme colour</div>
+          <div className="panel-sub" style={{ marginBottom: 12 }}>Pick an accent colour for your sidebar, buttons and headings.</div>
+          <div className="theme-swatch-row">
+            {THEME_PRESETS.map((t) => (
+              <button key={t.id} className={`theme-swatch ${settings.themeColor === t.color ? 'theme-swatch-active' : ''}`}
+                style={{ background: t.color }} title={t.label} onClick={() => setSettings((s) => ({ ...s, themeColor: t.color }))}>
+                {settings.themeColor === t.color && <CheckCircle2 size={14} color="#fff" />}
+              </button>
+            ))}
+            <label className="theme-swatch theme-swatch-custom" title="Custom colour">
+              <Palette size={14} />
+              <input type="color" value={settings.themeColor} onChange={(e) => setSettings((s) => ({ ...s, themeColor: e.target.value }))} />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
+        <div className="panel-title">Payment portal profile</div>
+        <div className="panel-sub" style={{ marginBottom: 14 }}>Shown on invoices and receipts sent to your clients.</div>
+        <div className="two-col">
+          <div>
+            <div className="logo-upload-row">
+              <div className="logo-preview">{settings.logoDataUrl ? <img src={settings.logoDataUrl} alt="logo" /> : <Building2 size={22} />}</div>
+              <div>
+                <button className="btn btn-outline btn-small" onClick={triggerLogoUpload}><Upload size={13} /> Upload business logo</button>
+                {settings.logoDataUrl && <button className="btn btn-ghost btn-small" style={{ marginLeft: 8 }} onClick={() => setSettings((s) => ({ ...s, logoDataUrl: '' }))}>Remove</button>}
+                <input ref={logoInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleLogoFile} />
+              </div>
+            </div>
+            <div className="field" style={{ marginTop: 14 }}><label>RC number</label>
+              <input className="kb-input" value={settings.rcNumber} onChange={(e) => setSettings((s) => ({ ...s, rcNumber: e.target.value }))} placeholder="RC 1234567" />
+            </div>
+            <div className="field-row">
+              <div className="field"><label>Business phone</label>
+                <input className="kb-input" value={settings.businessPhone} onChange={(e) => setSettings((s) => ({ ...s, businessPhone: e.target.value }))} placeholder="080\u2026" />
+              </div>
+              <div className="field"><label>Business email</label>
+                <input className="kb-input" value={settings.businessEmail} onChange={(e) => setSettings((s) => ({ ...s, businessEmail: e.target.value }))} placeholder="hello@business.com" />
+              </div>
+            </div>
+            <div className="field"><label>Business address</label>
+              <input className="kb-input" value={settings.businessAddress} onChange={(e) => setSettings((s) => ({ ...s, businessAddress: e.target.value }))} placeholder="Optional" />
+            </div>
+          </div>
+          <div>
+            <div className="field"><label>Bank name</label>
+              <input className="kb-input" value={settings.bankName} onChange={(e) => setSettings((s) => ({ ...s, bankName: e.target.value }))} placeholder="e.g. GTBank" />
+            </div>
+            <div className="field"><label>Account number</label>
+              <input className="kb-input" value={settings.accountNumber} onChange={(e) => setSettings((s) => ({ ...s, accountNumber: e.target.value.replace(/\D/g, '') }))} placeholder="0123456789" />
+            </div>
+            <div className="field"><label>Account name</label>
+              <input className="kb-input" value={settings.accountName} onChange={(e) => setSettings((s) => ({ ...s, accountName: e.target.value }))} placeholder="Defaults to business name" />
+            </div>
+            <div className="panel-sub">These bank details print on every invoice and shared receipt so clients know exactly where to pay.</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
+        <div className="panel-title">Data & backups</div>
+        <div className="panel-sub" style={{ marginBottom: 12 }}>Everything lives in this session only. Export a backup regularly, and import it again next time you open the app.</div>
+        <div className="settings-actions">
+          <button className="btn btn-primary" onClick={exportBackup}><Download size={15} /> Export full backup (JSON)</button>
+          <button className="btn btn-secondary" onClick={triggerImport}><Upload size={15} /> Import backup</button>
+          <input ref={importInputRef} type="file" accept="application/json" style={{ display: 'none' }} onChange={handleImportFile} />
+        </div>
+        <div className="settings-actions" style={{ marginTop: 18 }}>
+          <button className="btn btn-outline" onClick={resetSampleData}><RotateCcw size={15} /> Restore sample data</button>
+          <button className="btn btn-danger" onClick={clearAllData}><Trash2 size={15} /> Clear all data</button>
+        </div>
+      </div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
+        <div className="panel-title">Export a plan's contribution sheet</div>
+        <div className="panel-sub" style={{ marginBottom: 12 }}>Download the tap-grid for any thrift plan as a spreadsheet-ready CSV file.</div>
+        <div className="settings-actions">
+          {plans.map((p) => (
+            <button key={p.id} className="btn btn-outline btn-small" onClick={() => exportPlanCsv(p)}>
+              <Download size={13} /> {p.name}
+            </button>
+          ))}
+          {plans.length === 0 && <span className="panel-sub">No thrift plans yet.</span>}
+        </div>
+      </div>
+    </>
+  );
+
+  const MODULE_META = {
+    thrift: { label: 'Thrift', icon: PiggyBank },
+    loans: { label: 'Loan Tracking', icon: HandCoins },
+    payments: { label: 'Payment Portal', icon: Wallet },
+  };
+  const MODULE_NAV = {
+    thrift: [
+      { id: 'thriftOverview', label: 'Overview', icon: LayoutDashboard },
+      { id: 'plans', label: 'Plans', icon: PiggyBank },
+      { id: 'contributors', label: 'Members', icon: Users },
+    ],
+    loans: [
+      { id: 'loansOverview', label: 'Overview', icon: LayoutDashboard },
+      { id: 'loansGiven', label: 'Given', icon: HandCoins },
+      { id: 'loansReceived', label: 'Received', icon: Landmark },
+    ],
+    payments: [
+      { id: 'paymentsOverview', label: 'Overview', icon: LayoutDashboard },
+      { id: 'invoices', label: 'Invoices', icon: FileText },
+      { id: 'clients', label: 'Clients', icon: Users },
+      { id: 'receipts', label: 'Receipts', icon: Receipt },
+    ],
+  };
+  const openModule = (mod) => { setActiveModule(mod); setActiveTab(MODULE_NAV[mod][0].id); };
+  const goHome = () => { setActiveModule('home'); setActiveTab('home'); };
+  const MODULE_ALERT_GROUPS = {
+    thrift: ['Thrift contributions'], loans: ['Loans given', 'Loans received'], payments: ['Payments'],
+  };
+
+  if (!currentUser) {
+    return (
+      <>
+        <AuthScreen users={users} onLogin={handleLogin} onSignup={handleSignup} flash={flash} />
+        {toast && <div className="toast">{toast}</div>}
+      </>
+    );
+  }
 
   return (
-    <div className="app-container">
-      {toast && <div className="toast-banner">{toast}</div>}
-      <div style={{ padding: '24px', textAlign: 'center' }}>
-        <h1 style={{ fontFamily: 'Fraunces, serif', color: '#1B2A4A' }}>PocketLedger PWA Active</h1>
-        <p>Manifest and Service Worker successfully integrated into the single-file application.</p>
-      </div>
+    <div className="kb-root" style={{ '--ink': settings.themeColor || '#1B2A4A' }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+        :root{
+          --ink:#1B2A4A; --ink-soft:#5B6478; --paper:#F7F3EA; --paper-line:#E7E0CC;
+          --green:#1F7A5C; --green-bg:#E3F1EA; --gold:#B78A2E; --gold-bg:#FBF3DF;
+          --brick:#A6432D; --brick-bg:#F7E7E2; --steel:#2F4B7C; --steel-bg:#E7ECF4;
+        }
+        .kb-root *{box-sizing:border-box;}
+        .kb-root{font-family:'IBM Plex Sans',sans-serif;background:var(--paper);color:var(--ink);min-height:100vh;width:100%;}
+        .kb-display{font-family:'Fraunces',serif;}
+        .kb-mono{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;}
+        .logo{display:flex;align-items:center;gap:10px;padding:0 20px 22px;border-bottom:1px solid rgba(237,232,218,0.15);margin-bottom:10px;}
+        .logo-mark{width:34px;height:34px;border-radius:50%;background:var(--gold);display:flex;align-items:center;justify-content:center;color:var(--ink);}
+        .logo-text .kb-title{font-size:17px;font-weight:600;line-height:1.1;}
+        .logo-text .kb-tag{font-size:10.5px;color:#B9C0D4;letter-spacing:.04em;}
+        .bell-dot{position:absolute;top:-4px;right:-4px;background:var(--brick);color:#fff;font-size:10px;font-weight:700;border-radius:9px;min-width:16px;height:16px;display:flex;align-items:center;justify-content:center;padding:0 4px;}
+        .content{flex:1;padding:28px 36px 60px;background-image:repeating-linear-gradient(to bottom,transparent,transparent 37px,var(--paper-line) 38px);}
+        .eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink-soft);font-weight:600;margin-bottom:2px;}
+        .section-header{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:20px;}
+        .section-header h2{font-size:24px;margin:0;font-weight:600;}
+        .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:22px;}
+        .stat-card{background:#fff;border:1px solid var(--paper-line);border-radius:12px;padding:16px 18px;position:relative;}
+        .stat-icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:10px;}
+        .tone-green .stat-icon{background:var(--green-bg);color:var(--green);}
+        .tone-steel .stat-icon{background:var(--steel-bg);color:var(--steel);}
+        .tone-brick .stat-icon{background:var(--brick-bg);color:var(--brick);}
+        .tone-gold .stat-icon{background:var(--gold-bg);color:var(--gold);}
+        .stat-label{font-size:12.5px;color:var(--ink-soft);margin-bottom:4px;}
+        .stat-value{font-size:21px;font-weight:600;}
+        .stat-sub{font-size:11.5px;color:var(--ink-soft);margin-top:3px;}
+        .two-col{display:grid;grid-template-columns:1.4fr 1fr;gap:16px;}
+        .panel{background:#fff;border:1px solid var(--paper-line);border-radius:12px;padding:18px 20px;}
+        .panel-title{font-size:14px;font-weight:600;margin-bottom:12px;}
+        .panel-title-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+        .panel-sub{font-size:12px;color:var(--ink-soft);}
+        .link-btn{background:none;border:none;color:var(--steel);font-size:12.5px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:3px;}
+        .activity-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:11px;}
+        .activity-item{display:flex;align-items:center;gap:9px;font-size:13px;}
+        .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+        .dot-in{background:var(--green);}
+        .dot-out{background:var(--brick);}
+        .activity-text{flex:1;color:var(--ink);}
+        .activity-date{color:var(--ink-soft);font-size:11.5px;}
+        .alert-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;}
+        .alert-row{display:flex;align-items:center;gap:9px;font-size:13px;padding:9px 11px;border-radius:8px;border:1px solid transparent;}
+        .alert-row span{flex:1;}
+        .sev-high{background:var(--brick-bg);color:var(--brick);}
+        .sev-medium{background:var(--gold-bg);color:var(--gold);}
+        .btn{display:inline-flex;align-items:center;gap:6px;border-radius:8px;padding:9px 15px;font-size:13.5px;font-weight:600;cursor:pointer;border:1px solid transparent;}
+        .btn-primary{background:var(--ink);color:#fff;}
+        .btn-primary:hover{background:#28395e;}
+        .btn-secondary{background:var(--steel);color:#fff;}
+        .btn-secondary:hover{background:#26406a;}
+        .btn-outline{background:#fff;color:var(--ink);border-color:var(--paper-line);}
+        .btn-outline:hover{border-color:var(--ink);}
+        .btn-ghost{background:var(--steel-bg);color:var(--steel);}
+        .btn-ghost:hover{background:#DCE4F0;}
+        .btn-danger{background:var(--brick-bg);color:var(--brick);}
+        .btn-danger:hover{background:#F0D4CC;}
+        .btn-small{padding:7px 11px;font-size:12.5px;}
+        .plan-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px;}
+        .plan-card{background:#fff;border:1px solid var(--paper-line);border-radius:12px;padding:16px;cursor:pointer;transition:border-color .15s, transform .1s;}
+        .plan-card:hover{transform:translateY(-2px);}
+        .plan-card-active{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink);}
+        .plan-card-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
+        .plan-amount{font-size:13px;color:var(--ink-soft);}
+        .plan-card-name{font-size:16.5px;font-weight:600;margin-bottom:4px;}
+        .plan-card-meta{font-size:12px;color:var(--ink-soft);margin-bottom:10px;}
+        .plan-card-total{font-size:13px;font-weight:600;}
+        .tag{display:inline-block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;padding:3px 9px;border-radius:20px;}
+        .tag-green{background:var(--green-bg);color:var(--green);}
+        .tag-gold{background:var(--gold-bg);color:var(--gold);}
+        .tag-steel{background:var(--steel-bg);color:var(--steel);}
+        .tag-ink{background:#E7E5DC;color:var(--ink);}
+        .tag-brick{background:var(--brick-bg);color:var(--brick);}
+        .progress-track{position:relative;height:9px;background:#EFEAE0;border-radius:6px;overflow:hidden;}
+        .progress-fill{height:100%;background:var(--green);border-radius:6px;}
+        .progress-label{position:absolute;right:0;top:-16px;font-size:11px;color:var(--ink-soft);}
+        .inline-add select{max-width:220px;}
+        .grid-scroll{overflow-x:auto;}
+        .contrib-grid{border-collapse:collapse;width:100%;font-size:12.5px;}
+        .contrib-grid th{text-align:center;padding:6px 8px;color:var(--ink-soft);font-weight:600;white-space:nowrap;}
+        .contrib-grid th.member-col, .contrib-grid td.member-col{text-align:left;white-space:nowrap;font-weight:500;padding-right:14px;}
+        .contrib-grid td{text-align:center;padding:4px;}
+        .cell-dot{width:26px;height:26px;border-radius:7px;border:1.5px solid var(--paper-line);background:#fff;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:var(--green);}
+        .cell-paid{background:var(--green-bg);border-color:var(--green);}
+        .cell-unpaid:hover{border-color:var(--steel);}
+        .cell-today{box-shadow:0 0 0 2px var(--gold-bg);}
+        .kb-input{border:1px solid var(--paper-line);border-radius:8px;padding:8px 11px;font-size:13px;font-family:inherit;background:#fff;color:var(--ink);}
+        .master-detail{display:grid;grid-template-columns:300px 1fr;gap:16px;align-items:start;}
+        .master-list{padding:14px;}
+        .search-box{display:flex;align-items:center;gap:7px;border:1px solid var(--paper-line);border-radius:8px;padding:7px 10px;margin-bottom:10px;color:var(--ink-soft);}
+        .search-box input{border:none;outline:none;font-size:13px;width:100%;background:transparent;}
+        .member-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px;max-height:520px;overflow-y:auto;}
+        .member-list li{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer;}
+        .member-list li:hover{background:#F3EFE3;}
+        .member-row-active{background:var(--steel-bg) !important;}
+        .member-avatar{width:30px;height:30px;border-radius:50%;background:var(--gold-bg);color:var(--gold);display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;flex-shrink:0;}
+        .member-name{font-size:13.5px;font-weight:500;}
+        .member-sub{font-size:11px;color:var(--ink-soft);}
+        .chev{margin-left:auto;color:var(--ink-soft);transition:transform .15s;}
+        .chev-open{transform:rotate(180deg);}
+        .detail-panel{padding:22px 24px;}
+        .detail-head{display:flex;align-items:center;gap:14px;margin-bottom:18px;}
+        .member-avatar-lg{width:52px;height:52px;border-radius:50%;background:var(--gold-bg);color:var(--gold);display:flex;align-items:center;justify-content:center;font-weight:600;font-size:20px;flex-shrink:0;}
+        .detail-name{font-size:19px;font-weight:600;}
+        .detail-stats{display:flex;gap:28px;padding:14px 0;border-top:1px solid var(--paper-line);border-bottom:1px solid var(--paper-line);margin-bottom:14px;}
+        .detail-stats span{display:block;font-size:18px;font-weight:600;}
+        .detail-stats label{font-size:11px;color:var(--ink-soft);}
+        .tag-row{display:flex;gap:6px;flex-wrap:wrap;}
+        .history-table{width:100%;border-collapse:collapse;font-size:13px;}
+        .history-table th{text-align:left;color:var(--ink-soft);font-weight:600;font-size:11.5px;padding:6px 4px;border-bottom:1px solid var(--paper-line);}
+        .history-table td{padding:7px 4px;border-bottom:1px solid #F1EDE1;}
+        .loan-search{max-width:320px;margin-bottom:16px;}
+        .loan-groups{display:flex;flex-direction:column;gap:20px;}
+        .person-group{background:#F3EFE3;border:1px solid var(--paper-line);border-radius:14px;padding:14px;}
+        .person-group-head{display:flex;align-items:center;gap:12px;padding:4px 6px 14px;}
+        .person-group-info{flex:1;}
+        .person-group-name{font-size:16.5px;font-weight:600;}
+        .person-group-head .outstanding{font-size:17px;}
+        .field-hint{font-size:11px;color:var(--ink-soft);margin-top:5px;line-height:1.4;}
+        .loan-list{display:flex;flex-direction:column;gap:10px;}
+        .loan-card{background:#fff;border:1px solid var(--paper-line);border-radius:12px;overflow:hidden;}
+        .loan-card-top{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;cursor:pointer;}
+        .loan-name{font-size:16px;font-weight:600;}
+        .linked-tag{display:inline-flex;align-items:center;gap:3px;margin-left:8px;color:var(--steel);font-weight:600;}
+        .loan-card-right{display:flex;align-items:center;gap:14px;}
+        .outstanding{font-size:14px;font-weight:600;text-align:right;}
+        .outstanding span{display:block;font-size:10.5px;font-weight:400;color:var(--ink-soft);font-family:'IBM Plex Sans',sans-serif;}
+        .loan-card-body{padding:0 18px 18px;border-top:1px solid var(--paper-line);}
+        .loan-note{font-style:italic;color:var(--ink-soft);font-size:13px;margin:12px 0;}
+        .payment-history{list-style:none;margin:0 0 12px;padding:0;display:flex;flex-direction:column;gap:7px;}
+        .payment-history li{display:flex;align-items:center;gap:8px;font-size:13px;}
+        .pay-icon{color:var(--green);}
+        .add-payment-row{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;}
+        .stamp{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border:1.5px solid;border-radius:4px;text-transform:uppercase;font-size:10.5px;letter-spacing:.07em;font-weight:700;transform:rotate(-2deg);font-family:'IBM Plex Mono',monospace;white-space:nowrap;}
+        .stamp-completed{color:var(--green);border-color:var(--green);background:var(--green-bg);}
+        .stamp-overdue{color:var(--brick);border-color:var(--brick);background:var(--brick-bg);}
+        .stamp-active{color:var(--steel);border-color:var(--steel);background:var(--steel-bg);}
+        .stamp-due-soon{color:var(--gold);border-color:var(--gold);background:var(--gold-bg);}
+        .empty-state{padding:26px 10px;text-align:center;color:var(--ink-soft);font-size:13px;}
+        .modal-backdrop{position:fixed;inset:0;background:rgba(27,42,74,0.45);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px;}
+        .modal-card{background:var(--paper);border-radius:14px;width:100%;max-width:460px;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.25);}
+        .modal-head{display:flex;justify-content:space-between;align-items:center;padding:18px 22px;border-bottom:1px solid var(--paper-line);}
+        .modal-head h3{margin:0;font-size:18px;}
+        .icon-btn{background:none;border:none;cursor:pointer;color:var(--ink-soft);}
+        .home-shell, .module-shell{height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden;}
+        .home-topbar, .module-topbar{display:flex;align-items:center;justify-content:space-between;padding:18px 28px;border-bottom:1px solid var(--paper-line);background:#fff;flex-shrink:0;}
+        .home-topbar .logo{border-bottom:none;padding:0;margin-bottom:0;}
+        .home-topbar .logo-mark{background:var(--ink);color:var(--gold);}
+        .home-topbar .logo-text .kb-title{color:var(--ink);}
+        .home-topbar .logo-text .kb-tag{color:var(--ink-soft);}
+        .home-topbar-actions, .module-topbar-actions{display:flex;align-items:center;gap:10px;}
+        .home-topbar-actions .icon-btn, .module-topbar-actions .icon-btn, .module-topbar > .icon-btn{
+          position:relative;background:#fff;border:1px solid var(--paper-line);border-radius:10px;width:36px;height:36px;
+          display:flex;align-items:center;justify-content:center;color:var(--ink);
+        }
+        .icon-btn-active{background:var(--ink) !important;color:#fff !important;border-color:var(--ink) !important;}
+        .module-topbar-title{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;color:var(--ink);}
+        .home-content, .module-content{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:28px 36px 60px;background-image:repeating-linear-gradient(to bottom,transparent,transparent 37px,var(--paper-line) 38px);}
+        .bottom-nav{display:flex;background:#fff;border-top:1px solid var(--paper-line);flex-shrink:0;padding:6px 4px calc(6px + env(safe-area-inset-bottom));}
+        .bottom-nav-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:none;cursor:pointer;color:var(--ink-soft);padding:6px 2px;font-size:10.5px;font-weight:600;border-radius:10px;}
+        .bottom-nav-item-active{color:var(--ink);background:var(--paper);}
+        .modal-body{padding:20px 22px;display:flex;flex-direction:column;gap:14px;}
+        .field label{display:block;font-size:12px;font-weight:600;color:var(--ink-soft);margin-bottom:5px;}
+        .field .kb-input{width:100%;}
+        .field-row{display:flex;gap:10px;}
+        .field-row .field{flex:1;}
+        .checkbox-list{display:flex;flex-direction:column;gap:6px;max-height:150px;overflow-y:auto;border:1px solid var(--paper-line);border-radius:8px;padding:10px;}
+        .checkbox-list label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:400;color:var(--ink);}
+        .balance-breakdown{background:#F8F5EB;border:1px solid var(--paper-line);border-radius:10px;padding:12px 14px;margin:12px 0 6px;display:flex;flex-direction:column;gap:6px;}
+        .balance-breakdown div{display:flex;justify-content:space-between;font-size:12.5px;}
+        .balance-breakdown label{color:var(--ink-soft);font-weight:400;}
+        .balance-total{border-top:1px dashed var(--paper-line);padding-top:6px;margin-top:2px;font-weight:600;}
+        .balance-total label{color:var(--ink);font-weight:600;}
+        .loan-actions{display:flex;gap:8px;flex-wrap:wrap;}
+        .receipt-link{margin-left:auto;font-size:11.5px;}
+        .settings-actions{display:flex;gap:10px;flex-wrap:wrap;}
+        .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:10px;font-size:13px;box-shadow:0 10px 30px rgba(0,0,0,0.25);z-index:100;}
+        .receipt-card{max-width:420px;}
+        .receipt-sheet{background:#fff;border:1.5px dashed var(--paper-line);border-radius:10px;padding:20px;}
+        .receipt-brand{font-size:19px;font-weight:600;}
+        .receipt-sub{font-size:11.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-soft);margin-bottom:14px;}
+        .receipt-lines{display:flex;flex-direction:column;gap:9px;}
+        .receipt-row{display:flex;justify-content:space-between;font-size:13px;gap:14px;}
+        .receipt-row span:first-child{color:var(--ink-soft);}
+        .receipt-divider{border-top:1px dashed var(--paper-line);margin:2px 0;}
+        .receipt-footer{margin-top:16px;padding-top:10px;border-top:1px solid var(--paper-line);font-size:11px;color:var(--ink-soft);font-style:italic;}
+        .receipt-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;}
+        @media print{
+          body *{visibility:hidden;}
+          #receipt-print-area, #receipt-print-area *{visibility:visible;}
+          #receipt-print-area{position:fixed;top:0;left:0;width:100%;border:none;padding:24px;}
+        }
+        .logo-mark-img{width:100%;height:100%;object-fit:cover;border-radius:50%;}
+        .home-card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px;}
+        .carousel{position:relative;display:flex;align-items:center;gap:14px;background:#fff;border:1px solid var(--paper-line);border-radius:16px;padding:22px 54px;margin-bottom:22px;min-height:104px;}
+        .carousel.tone-green{background:linear-gradient(135deg, var(--green-bg), #fff 70%);}
+        .carousel.tone-steel{background:linear-gradient(135deg, var(--steel-bg), #fff 70%);}
+        .carousel.tone-gold{background:linear-gradient(135deg, var(--gold-bg), #fff 70%);}
+        .carousel-slide{display:flex;align-items:center;gap:16px;flex:1;}
+        .carousel-icon{width:46px;height:46px;border-radius:12px;background:rgba(255,255,255,0.7);display:flex;align-items:center;justify-content:center;color:var(--ink);flex-shrink:0;}
+        .carousel-title{font-size:17px;font-weight:600;margin-bottom:4px;}
+        .carousel-desc{font-size:12.5px;color:var(--ink-soft);line-height:1.5;max-width:520px;}
+        .carousel-arrow{position:absolute;top:50%;transform:translateY(-50%);width:30px;height:30px;border-radius:50%;border:1px solid var(--paper-line);background:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--ink);}
+        .carousel-arrow-left{left:12px;}
+        .carousel-arrow-right{right:12px;}
+        .carousel-dots{position:absolute;bottom:10px;left:0;right:0;display:flex;justify-content:center;gap:6px;}
+        .carousel-dot{width:6px;height:6px;border-radius:50%;background:var(--paper-line);border:none;cursor:pointer;padding:0;}
+        .carousel-dot-active{background:var(--ink);width:16px;border-radius:3px;}
+        .home-card{background:#fff;border:1px solid var(--paper-line);border-radius:16px;padding:24px;cursor:pointer;transition:transform .15s, box-shadow .15s;}
+        .home-card:hover{transform:translateY(-3px);box-shadow:0 14px 30px rgba(27,42,74,0.12);}
+        .home-card-icon{width:44px;height:44px;border-radius:11px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;}
+        .home-card.tone-green .home-card-icon{background:var(--green-bg);color:var(--green);}
+        .home-card.tone-steel .home-card-icon{background:var(--steel-bg);color:var(--steel);}
+        .home-card.tone-gold .home-card-icon{background:var(--gold-bg);color:var(--gold);}
+        .home-card-title{font-size:20px;font-weight:600;margin-bottom:8px;}
+        .home-card-desc{font-size:13px;color:var(--ink-soft);line-height:1.5;margin-bottom:18px;min-height:58px;}
+        .home-card-foot{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;font-weight:600;color:var(--ink);padding-top:14px;border-top:1px solid var(--paper-line);}
+        .theme-swatch-row{display:flex;gap:10px;flex-wrap:wrap;}
+        .theme-swatch{width:34px;height:34px;border-radius:50%;border:2px solid rgba(0,0,0,0.08);cursor:pointer;display:flex;align-items:center;justify-content:center;position:relative;}
+        .theme-swatch-active{box-shadow:0 0 0 2px #fff, 0 0 0 4px var(--ink);}
+        .theme-swatch-custom{background:#fff;color:var(--ink-soft);border:1.5px dashed var(--paper-line);overflow:hidden;}
+        .theme-swatch-custom input{position:absolute;inset:0;opacity:0;cursor:pointer;}
+        .logo-upload-row{display:flex;align-items:center;gap:14px;}
+        .logo-preview{width:52px;height:52px;border-radius:10px;background:#F3EFE3;border:1px solid var(--paper-line);display:flex;align-items:center;justify-content:center;overflow:hidden;color:var(--ink-soft);flex-shrink:0;}
+        .logo-preview img{width:100%;height:100%;object-fit:cover;}
+        .invoice-items-edit{display:flex;flex-direction:column;gap:8px;}
+        .invoice-item-row{display:flex;gap:6px;align-items:center;}
+        .invoice-doc-head{display:flex;align-items:center;gap:12px;margin-bottom:6px;}
+        .invoice-logo{width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0;}
+        .client-card{cursor:default;}
+        .cycle-panel{background:var(--brick-bg);border-radius:12px;padding:16px;margin-bottom:16px;}
+        .cycle-panel-top{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+        .cycle-pot{font-size:22px;font-weight:700;color:var(--brick);}
+        .cycle-turn{text-align:right;}
+        .cycle-turn-name{font-size:16px;font-weight:600;}
+        .cycle-history{margin-top:12px;display:flex;flex-direction:column;gap:6px;}
+        .cycle-history-row{display:flex;align-items:center;gap:10px;font-size:12.5px;background:#fff;border-radius:8px;padding:7px 10px;}
+        .cycle-history-row span:first-child{flex:1;color:var(--ink-soft);}
+        @media (max-width:900px){
+          .stat-grid{grid-template-columns:repeat(2,1fr);}
+          .two-col{grid-template-columns:1fr;}
+          .master-detail{grid-template-columns:1fr;}
+          .home-card-grid{grid-template-columns:1fr;}
+          .home-content, .module-content{padding:18px;}
+          .home-topbar, .module-topbar{padding:16px 18px;}
+          .carousel{padding:18px 44px;}
+          .bottom-nav-item span{font-size:9.5px;}
+        }
+      `}</style>
+
+      {activeModule === 'home' ? (
+        <div className="home-shell">
+          <header className="home-topbar">
+            <div className="logo" onClick={goHome} style={{ cursor: 'pointer' }} title="Home">
+              <div className="logo-mark">{settings.logoDataUrl ? <img src={settings.logoDataUrl} alt="logo" className="logo-mark-img" /> : <PiggyBank size={18} />}</div>
+              <div className="logo-text">
+                <div className="kb-title kb-display">{settings.businessName || 'PocketLedger'}</div>
+                <div className="kb-tag">Thrift, loans &amp; payments</div>
+              </div>
+            </div>
+            <div className="home-topbar-actions">
+              {activeTab !== 'home' && (
+                <button className="icon-btn" onClick={goHome} title="Home"><Home size={17} /></button>
+              )}
+              <button className={`icon-btn ${activeTab === 'alerts' ? 'icon-btn-active' : ''}`} onClick={() => setActiveTab('alerts')} title="Alerts">
+                <Bell size={17} />
+                {alerts.length > 0 && <span className="bell-dot">{alerts.length}</span>}
+              </button>
+              <button className={`icon-btn ${activeTab === 'settings' ? 'icon-btn-active' : ''}`} onClick={() => setActiveTab('settings')} title="Settings"><SettingsIcon size={17} /></button>
+              <button className="icon-btn" onClick={handleLogout} title="Log out"><LogOut size={17} /></button>
+            </div>
+          </header>
+          <div className="content home-content">
+            {activeTab === 'home' && renderHome()}
+            {activeTab === 'alerts' && renderAlerts()}
+            {activeTab === 'settings' && renderSettings()}
+          </div>
+        </div>
+      ) : (
+        <div className="module-shell">
+          <header className="module-topbar">
+            <button className="icon-btn" onClick={goHome} title="Home"><Home size={18} /></button>
+            <div className="module-topbar-title">
+              {(() => { const M = MODULE_META[activeModule].icon; return <M size={16} />; })()}
+              <span className="kb-display">{MODULE_META[activeModule].label}</span>
+            </div>
+            <div className="module-topbar-actions">
+              <button className="icon-btn" onClick={() => setActiveTab('alerts')} title="Alerts">
+                <Bell size={16} />
+                {moduleAlerts(MODULE_ALERT_GROUPS[activeModule]).length > 0 && <span className="bell-dot">{moduleAlerts(MODULE_ALERT_GROUPS[activeModule]).length}</span>}
+              </button>
+              <button className="icon-btn" onClick={() => setActiveTab('settings')} title="Settings"><SettingsIcon size={16} /></button>
+              <button className="icon-btn" onClick={handleLogout} title="Log out"><LogOut size={16} /></button>
+            </div>
+          </header>
+          <div className="content module-content">
+            {activeTab === 'thriftOverview' && renderThriftOverview()}
+            {activeTab === 'plans' && renderPlans()}
+            {activeTab === 'contributors' && renderContributors()}
+            {activeTab === 'loansOverview' && renderLoansOverview()}
+            {activeTab === 'loansGiven' && renderLoansGiven()}
+            {activeTab === 'loansReceived' && renderLoansReceived()}
+            {activeTab === 'paymentsOverview' && renderPaymentsOverview()}
+            {activeTab === 'invoices' && renderInvoices()}
+            {activeTab === 'clients' && renderClients()}
+            {activeTab === 'receipts' && renderReceipts()}
+            {activeTab === 'alerts' && renderAlerts()}
+            {activeTab === 'settings' && renderSettings()}
+          </div>
+          <nav className="bottom-nav">
+            {MODULE_NAV[activeModule].map((t) => (
+              <button key={t.id} className={`bottom-nav-item ${activeTab === t.id ? 'bottom-nav-item-active' : ''}`} onClick={() => setActiveTab(t.id)}>
+                <t.icon size={19} />
+                <span>{t.label}</span>
+              </button>
+            ))}
+          </nav>
+        </div>
+      )}
+
+      {toast && <div className="toast">{toast}</div>}
+
+      {modal === 'newPlan' && (
+        <Modal title="New thrift plan" onClose={closeModal}>
+          <div className="field">
+            <label>Plan name</label>
+            <input className="kb-input" placeholder="e.g. Morning Market Ajo" value={form.name || ''} onChange={(e) => setField('name', e.target.value)} />
+          </div>
+          <div className="field-row">
+            <div className="field">
+              <label>Category / type</label>
+              <select className="kb-input" value={form.category || 'Daily'} onChange={(e) => setField('category', e.target.value)}>
+                <option>Daily</option><option>Weekly</option><option>Monthly</option><option>Target</option><option>Cycle</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Amount per round</label>
+              <input type="number" className="kb-input" placeholder="500" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} />
+            </div>
+          </div>
+          {form.category === 'Target' && (
+            <div className="field">
+              <label>Target amount</label>
+              <input type="number" className="kb-input" placeholder="240000" value={form.targetAmount || ''} onChange={(e) => setField('targetAmount', e.target.value)} />
+            </div>
+          )}
+          {form.category === 'Cycle' && (
+            <div className="field">
+              <label>Contribution cadence</label>
+              <select className="kb-input" value={form.cycleFrequency || 'monthly'} onChange={(e) => setField('cycleFrequency', e.target.value)}>
+                <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
+              </select>
+              <div className="field-hint">Every member contributes {settings.currencySymbol}{form.amount || 0} each round; one member collects the whole pot per round, in the order you tick them below, until everyone has been paid once.</div>
+            </div>
+          )}
+          <div className="field">
+            <label>Start date</label>
+            <input type="date" className="kb-input" value={form.startDate || todayISO()} onChange={(e) => setField('startDate', e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Contributors</label>
+            <div className="checkbox-list">
+              {members.map((m) => (
+                <label key={m.id}>
+                  <input type="checkbox" checked={(form.memberIds || []).includes(m.id)}
+                    onChange={(e) => {
+                      const ids = form.memberIds || [];
+                      setField('memberIds', e.target.checked ? [...ids, m.id] : ids.filter((id) => id !== m.id));
+                    }} />
+                  {m.name}
+                </label>
+              ))}
+            </div>
+          </div>
+          <button className="btn btn-primary" onClick={submitNewPlan}>Create plan</button>
+        </Modal>
+      )}
+
+      {modal === 'newMember' && (
+        <Modal title="Add contributor" onClose={closeModal}>
+          <div className="field"><label>Full name</label>
+            <input className="kb-input" value={form.name || ''} onChange={(e) => setField('name', e.target.value)} placeholder="e.g. Blessing Nwachukwu" />
+          </div>
+          <div className="field"><label>Phone number</label>
+            <input className="kb-input" value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} placeholder="080\u2026" />
+          </div>
+          <button className="btn btn-primary" onClick={submitNewMember}>Add contributor</button>
+        </Modal>
+      )}
+
+      {modal === 'newLoanGiven' && (
+        <Modal title="Record a new loan given" onClose={closeModal}>
+          <div className="field"><label>Borrower's name</label>
+            <input className="kb-input" list="borrower-names" value={form.borrower || ''} onChange={(e) => setField('borrower', e.target.value)} placeholder="Who is receiving this loan?" />
+            <datalist id="borrower-names">{borrowerNames.map((n) => <option key={n} value={n} />)}</datalist>
+            <div className="field-hint">Type an existing name to add another loan for that person \u2014 it'll group with their other loans.</div>
+          </div>
+          <div className="field-row">
+            <div className="field"><label>Principal amount</label>
+              <input type="number" className="kb-input" value={form.principal || ''} onChange={(e) => setField('principal', e.target.value)} placeholder="50000" />
+            </div>
+            <div className="field"><label>Date given</label>
+              <input type="date" className="kb-input" value={form.dateGiven || todayISO()} onChange={(e) => setField('dateGiven', e.target.value)} />
+            </div>
+          </div>
+          <div className="field-row">
+            <div className="field"><label>Due date</label>
+              <input type="date" className="kb-input" value={form.dueDate || ''} onChange={(e) => setField('dueDate', e.target.value)} />
+            </div>
+            <div className="field"><label>Interest (% per year, optional)</label>
+              <input type="number" className="kb-input" value={form.interestRate || ''} onChange={(e) => setField('interestRate', e.target.value)} placeholder="0" />
+            </div>
+          </div>
+          <div className="field"><label>Phone (for WhatsApp reminders, optional)</label>
+            <input className="kb-input" value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} placeholder="080\u2026" />
+          </div>
+          <div className="field"><label>Link to a thrift plan (optional)</label>
+            <select className="kb-input" value={form.linkedPlanId || ''} onChange={(e) => setField('linkedPlanId', e.target.value)}>
+              <option value="">No linked plan</option>
+              {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Note</label>
+            <input className="kb-input" value={form.note || ''} onChange={(e) => setField('note', e.target.value)} placeholder="What is this loan for?" />
+          </div>
+          <button className="btn btn-primary" onClick={submitNewLoanGiven}>Save loan</button>
+        </Modal>
+      )}
+
+      {modal === 'newLoanReceived' && (
+        <Modal title="Record a personal loan received" onClose={closeModal}>
+          <div className="field"><label>Lender's name</label>
+            <input className="kb-input" list="lender-names" value={form.lender || ''} onChange={(e) => setField('lender', e.target.value)} placeholder="Who gave you this loan?" />
+            <datalist id="lender-names">{lenderNames.map((n) => <option key={n} value={n} />)}</datalist>
+            <div className="field-hint">Type an existing name to add another loan from that lender \u2014 it'll group with the others.</div>
+          </div>
+          <div className="field-row">
+            <div className="field"><label>Principal amount</label>
+              <input type="number" className="kb-input" value={form.principal || ''} onChange={(e) => setField('principal', e.target.value)} placeholder="100000" />
+            </div>
+            <div className="field"><label>Date received</label>
+              <input type="date" className="kb-input" value={form.dateReceived || todayISO()} onChange={(e) => setField('dateReceived', e.target.value)} />
+            </div>
+          </div>
+          <div className="field-row">
+            <div className="field"><label>Refund due date</label>
+              <input type="date" className="kb-input" value={form.dueDate || ''} onChange={(e) => setField('dueDate', e.target.value)} />
+            </div>
+            <div className="field"><label>Interest (% per year, optional)</label>
+              <input type="number" className="kb-input" value={form.interestRate || ''} onChange={(e) => setField('interestRate', e.target.value)} placeholder="0" />
+            </div>
+          </div>
+          <div className="field"><label>Phone (for WhatsApp reminders, optional)</label>
+            <input className="kb-input" value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} placeholder="080\u2026" />
+          </div>
+          <div className="field"><label>Link to a thrift plan (optional)</label>
+            <select className="kb-input" value={form.linkedPlanId || ''} onChange={(e) => setField('linkedPlanId', e.target.value)}>
+              <option value="">No linked plan</option>
+              {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Note</label>
+            <input className="kb-input" value={form.note || ''} onChange={(e) => setField('note', e.target.value)} placeholder="What was this loan for?" />
+          </div>
+          <button className="btn btn-primary" onClick={submitNewLoanReceived}>Save loan</button>
+        </Modal>
+      )}
+      {modal === 'newClient' && (
+        <Modal title="Add client" onClose={closeModal}>
+          <div className="field"><label>Client / business name</label>
+            <input className="kb-input" value={form.name || ''} onChange={(e) => setField('name', e.target.value)} placeholder="e.g. Bright Star Ventures" />
+          </div>
+          <div className="field"><label>Phone number</label>
+            <input className="kb-input" value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} placeholder="080\u2026" />
+          </div>
+          <div className="field"><label>Email (optional)</label>
+            <input className="kb-input" value={form.email || ''} onChange={(e) => setField('email', e.target.value)} placeholder="client@example.com" />
+          </div>
+          <div className="field"><label>Address (optional)</label>
+            <input className="kb-input" value={form.address || ''} onChange={(e) => setField('address', e.target.value)} placeholder="Delivery / billing address" />
+          </div>
+          <button className="btn btn-primary" onClick={submitNewClient}>Add client</button>
+        </Modal>
+      )}
+
+      {modal === 'newInvoice' && (
+        <Modal title="New invoice" onClose={closeModal}>
+          <div className="field"><label>Client</label>
+            <select className="kb-input" value={form.clientId || ''} onChange={(e) => setField('clientId', e.target.value)}>
+              <option value="">Select a client</option>
+              {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <div className="field-row">
+            <div className="field"><label>Issue date</label>
+              <input type="date" className="kb-input" value={form.issueDate || todayISO()} onChange={(e) => setField('issueDate', e.target.value)} />
+            </div>
+            <div className="field"><label>Due date</label>
+              <input type="date" className="kb-input" value={form.dueDate || ''} onChange={(e) => setField('dueDate', e.target.value)} />
+            </div>
+          </div>
+          <div className="field">
+            <label>Line items</label>
+            <div className="invoice-items-edit">
+              {(form.items || []).map((it) => (
+                <div key={it.id} className="invoice-item-row">
+                  <input className="kb-input" placeholder="Description" value={it.desc} onChange={(e) => updateInvoiceItem(it.id, 'desc', e.target.value)} style={{ flex: 2 }} />
+                  <input type="number" className="kb-input" placeholder="Qty" value={it.qty} onChange={(e) => updateInvoiceItem(it.id, 'qty', e.target.value)} style={{ width: 60 }} />
+                  <input type="number" className="kb-input" placeholder="Price" value={it.price} onChange={(e) => updateInvoiceItem(it.id, 'price', e.target.value)} style={{ width: 100 }} />
+                  <button className="icon-btn" onClick={() => removeInvoiceItem(it.id)}><X size={15} /></button>
+                </div>
+              ))}
+            </div>
+            <button className="btn btn-outline btn-small" style={{ marginTop: 8 }} onClick={addInvoiceItem}><Plus size={13} /> Add line item</button>
+          </div>
+          <div className="field-hint" style={{ textAlign: 'right', fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>
+            Total: {fmt((form.items || []).reduce((s, it) => s + Number(it.qty || 0) * Number(it.price || 0), 0))}
+          </div>
+          <div className="field"><label>Notes (optional)</label>
+            <input className="kb-input" value={form.notes || ''} onChange={(e) => setField('notes', e.target.value)} placeholder="Thank you for your business." />
+          </div>
+          <button className="btn btn-primary" onClick={submitNewInvoice}>Create invoice</button>
+        </Modal>
+      )}
+
+      {modal === 'newReceipt' && (
+        <Modal title="Issue receipt" onClose={closeModal}>
+          <div className="field"><label>Client (optional)</label>
+            <select className="kb-input" value={form.clientId || ''} onChange={(e) => setField('clientId', e.target.value)}>
+              <option value="">Walk-in / type name below</option>
+              {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          {!form.clientId && (
+            <div className="field"><label>Payer name</label>
+              <input className="kb-input" value={form.clientName || ''} onChange={(e) => setField('clientName', e.target.value)} placeholder="e.g. Walk-in customer" />
+            </div>
+          )}
+          <div className="field-row">
+            <div className="field"><label>Amount received</label>
+              <input type="number" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} placeholder="25000" />
+            </div>
+            <div className="field"><label>Date</label>
+              <input type="date" className="kb-input" value={form.date || todayISO()} onChange={(e) => setField('date', e.target.value)} />
+            </div>
+          </div>
+          <div className="field"><label>Note (optional)</label>
+            <input className="kb-input" value={form.note || ''} onChange={(e) => setField('note', e.target.value)} placeholder="What was this payment for?" />
+          </div>
+          <button className="btn btn-primary" onClick={submitManualReceipt}>Issue receipt</button>
+        </Modal>
+      )}
+
+      {receipt && <ReceiptModal receipt={receipt} onClose={() => setReceipt(null)} fmt={fmt} settings={settings} memberById={memberById} planById={planById} shareToWhatsApp={shareToWhatsApp} shareImageToWhatsApp={shareImageToWhatsApp} />}
+      {invoiceDoc && (
+        <InvoiceDocModal
+          invoice={invoiceDoc}
+          client={clientById(invoiceDoc.clientId)}
+          settings={settings}
+          fmt={fmt}
+          onClose={() => setInvoiceDoc(null)}
+          onMarkPaid={(id) => { markInvoicePaid(id); setInvoiceDoc((d) => d ? { ...d, status: 'paid', paidDate: todayISO() } : d); }}
+          shareToWhatsApp={shareToWhatsApp}
+          shareImageToWhatsApp={shareImageToWhatsApp}
+          message={invoiceMessage(invoiceDoc)}
+        />
+      )}
+      {paymentReceiptDoc && (
+        <PaymentReceiptModal
+          receiptDoc={paymentReceiptDoc}
+          client={clientById(paymentReceiptDoc.clientId)}
+          invoice={paymentReceiptDoc.invoiceId ? invoiceById(paymentReceiptDoc.invoiceId) : null}
+          settings={settings}
+          fmt={fmt}
+          onClose={() => setPaymentReceiptDoc(null)}
+          shareToWhatsApp={shareToWhatsApp}
+          shareImageToWhatsApp={shareImageToWhatsApp}
+        />
+      )}
     </div>
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js')
+        .then((reg) => console.log('Service worker registered successfully.', reg))
+        .catch((err) => console.log('Service worker registration failed:', err));
+    });
+  }
 </script>
 </body>
 </html>
