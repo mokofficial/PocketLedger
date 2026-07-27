@@ -15,7 +15,9 @@
 <script src="https://unpkg.com/recharts@2/umd/Recharts.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
-  html, body { margin: 0; padding: 0; }
+  html, body { margin: 0; padding: 0; overflow-x: hidden; width: 100%; max-width: 100%; }
+  *, *::before, *::after { box-sizing: border-box; }
+  #root { overflow-x: hidden; width: 100%; }
 </style>
 </head>
 <body>
@@ -190,7 +192,7 @@ function seedLoansReceived() {
 
 function seedSettings() {
   return {
-    businessName: 'PocketLedger Ledger', ownerName: '', ownerPhone: '', countryCode: '234', currencySymbol: '\u20a6',
+    businessName: 'PocketLedger Ledger', ownerName: '', ownerPhone: '', countryCode: '234', currencySymbol: '₦',
     logoDataUrl: '', rcNumber: '', businessPhone: '', businessEmail: '', businessAddress: '',
     bankName: '', accountNumber: '', accountName: '', themeColor: '#1B2A4A',
   };
@@ -208,7 +210,7 @@ function seedInvoices() {
   return [
     {
       id: 'inv1', number: 'INV-1001', clientId: 'c1', issueDate: '2026-07-10', dueDate: '2026-07-24',
-      items: [{ id: uid(), desc: 'Website maintenance \u2014 July', qty: 1, price: 45000 }, { id: uid(), desc: 'Domain renewal', qty: 1, price: 8000 }],
+      items: [{ id: uid(), desc: 'Website maintenance — July', qty: 1, price: 45000 }, { id: uid(), desc: 'Domain renewal', qty: 1, price: 8000 }],
       status: 'sent', notes: 'Thank you for your business.', paidDate: null,
     },
     {
@@ -368,7 +370,7 @@ function ReceiptModal({ receipt, onClose, fmt, settings, planById, memberById, s
       ['Outstanding balance', fmt(outstanding)],
     ];
     waText = [
-      `*${settings.businessName}* \u2014 ${title}`, '',
+      `*${settings.businessName}* — ${title}`, '',
       `Receipt No: ${receiptNo}`,
       `${key === 'repayments' ? 'Received from' : 'Paid to'}: ${personName}`,
       `Amount: ${fmt(payment.amount)} on ${new Date(payment.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`,
@@ -390,7 +392,7 @@ function ReceiptModal({ receipt, onClose, fmt, settings, planById, memberById, s
       ['Amount paid out', fmt(payout.amount)],
     ];
     waText = [
-      `*${settings.businessName}* \u2014 ${title}`, '',
+      `*${settings.businessName}* — ${title}`, '',
       `Receipt No: ${receiptNo}`,
       `Paid out to: ${personName}`,
       `Plan: ${plan.name}`,
@@ -412,7 +414,7 @@ function ReceiptModal({ receipt, onClose, fmt, settings, planById, memberById, s
       ['Amount', fmt(contribution.amount)],
     ];
     waText = [
-      `*${settings.businessName}* \u2014 ${title}`, '',
+      `*${settings.businessName}* — ${title}`, '',
       `Receipt No: ${receiptNo}`,
       `Contributor: ${personName}`,
       `Plan: ${plan ? plan.name : 'N/A'}`,
@@ -446,7 +448,7 @@ function ReceiptModal({ receipt, onClose, fmt, settings, planById, memberById, s
                 ? <div key={i} className="receipt-divider" />
                 : <div key={i} className="receipt-row"><span>{label}</span><span className="kb-mono">{value}</span></div>)}
             </div>
-            <div className="receipt-footer">Issued {issuedOn}{settings.ownerName ? ` \u00b7 ${settings.ownerName}` : ''}</div>
+            <div className="receipt-footer">Issued {issuedOn}{settings.ownerName ? ` · ${settings.ownerName}` : ''}</div>
           </div>
           <div className="receipt-actions">
             <button className="btn btn-outline btn-small" onClick={downloadImage}><ImageIcon size={14} /> Download image</button>
@@ -488,7 +490,7 @@ function InvoiceDocModal({ invoice, client, settings, fmt, onClose, onMarkPaid, 
               {settings.logoDataUrl && <img src={settings.logoDataUrl} alt="logo" className="invoice-logo" />}
               <div>
                 <div className="receipt-brand">{settings.businessName}</div>
-                <div className="panel-sub">{[settings.rcNumber && `RC ${settings.rcNumber}`, settings.businessPhone, settings.businessEmail].filter(Boolean).join(' \u00b7 ')}</div>
+                <div className="panel-sub">{[settings.rcNumber && `RC ${settings.rcNumber}`, settings.businessPhone, settings.businessEmail].filter(Boolean).join(' · ')}</div>
               </div>
             </div>
             <div className="receipt-sub" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -562,7 +564,7 @@ function PaymentReceiptModal({ receiptDoc, client, invoice, settings, fmt, onClo
               {settings.logoDataUrl && <img src={settings.logoDataUrl} alt="logo" className="invoice-logo" />}
               <div>
                 <div className="receipt-brand">{settings.businessName}</div>
-                <div className="panel-sub">{[settings.rcNumber && `RC ${settings.rcNumber}`, settings.businessPhone, settings.businessEmail].filter(Boolean).join(' \u00b7 ')}</div>
+                <div className="panel-sub">{[settings.rcNumber && `RC ${settings.rcNumber}`, settings.businessPhone, settings.businessEmail].filter(Boolean).join(' · ')}</div>
               </div>
             </div>
             <div className="receipt-sub" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -603,7 +605,7 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
         return;
       }
       if (users.some((u) => u.email.toLowerCase() === fields.email.toLowerCase())) {
-        flash('An account with that email already exists \u2014 try logging in.');
+        flash('An account with that email already exists — try logging in.');
         return;
       }
       onSignup({ id: uid(), name: fields.name, businessName: fields.businessName || '', email: fields.email, password: fields.password });
@@ -639,13 +641,16 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
         .auth-hint{text-align:center;font-size:11.5px;color:#8B8578;margin-top:18px;}
         .auth-demo-box{margin-top:16px;background:#EFEAE0;border-radius:9px;padding:10px 12px;font-size:12px;color:#5B6478;text-align:center;}
         .auth-demo-fill{display:block;margin:6px auto 0;background:none;border:none;color:#B78A2E;font-weight:600;font-size:12px;cursor:pointer;padding:0;}
+        @media (max-width:480px){
+          .auth-card{padding:28px 20px;}
+        }
       `}</style>
       <div className="auth-card">
         <div className="auth-logo">
           <div className="auth-logo-mark"><PiggyBank size={19} /></div>
           <div className="auth-title">PocketLedger</div>
         </div>
-        <div className="auth-sub">Thrift, loans and business payments \u2014 all in one ledger.</div>
+        <div className="auth-sub">Thrift, loans and business payments — all in one ledger.</div>
         <div className="auth-tabs">
           <div className={`auth-tab ${mode === 'login' ? 'auth-tab-active' : ''}`} onClick={() => setMode('login')}>Log in</div>
           <div className={`auth-tab ${mode === 'signup' ? 'auth-tab-active' : ''}`} onClick={() => setMode('signup')}>Sign up</div>
@@ -666,7 +671,7 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
         </div>
         <div className="auth-field"><label>Password</label>
           <div className="auth-input-wrap">
-            <input className="auth-input" type={showPw ? 'text' : 'password'} value={fields.password} onChange={(e) => set('password', e.target.value)} placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" style={{ paddingRight: 36 }} />
+            <input className="auth-input" type={showPw ? 'text' : 'password'} value={fields.password} onChange={(e) => set('password', e.target.value)} placeholder="••••••••" style={{ paddingRight: 36 }} />
             <button className="auth-eye" onClick={() => setShowPw((s) => !s)}>{showPw ? <EyeOff size={15} /> : <Eye size={15} />}</button>
           </div>
         </div>
@@ -686,7 +691,7 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
             <button type="button" className="auth-demo-fill" onClick={() => { set('email', 'demo@pocketledger.ng'); set('password', 'demo1234'); }}>Use demo login</button>
           </div>
         )}
-        <div className="auth-hint">Your data is saved to this device automatically \u2014 export a backup from Settings for safekeeping or to move to another device. You can change your login email and password anytime from Settings.</div>
+        <div className="auth-hint">Your data is saved to this device automatically — export a backup from Settings for safekeeping or to move to another device. You can change your login email and password anytime from Settings.</div>
       </div>
     </div>
   );
@@ -729,13 +734,13 @@ function Carousel({ slides }) {
 function HomeScreen({ user, settings, onPick, stats }) {
   const cards = [
     { id: 'thrift', title: 'Thrift', desc: 'Run daily, weekly, monthly, rotating cycle or target savings circles and track every contribution.', icon: PiggyBank, tone: 'green', stat: `${stats.plans} active plan(s)` },
-    { id: 'loans', title: 'Loan Tracking', desc: 'Track money you\u2019ve lent out and personal loans you\u2019ve received, with reminders.', icon: HandCoins, tone: 'steel', stat: `${stats.loans} loan(s) on file` },
+    { id: 'loans', title: 'Loan Tracking', desc: 'Track money you’ve lent out and personal loans you’ve received, with reminders.', icon: HandCoins, tone: 'steel', stat: `${stats.loans} loan(s) on file` },
     { id: 'payments', title: 'Payment Portal', desc: 'Invoice clients, issue receipts, and send payment reminders for your business.', icon: Wallet, tone: 'gold', stat: `${stats.invoices} invoice(s)` },
   ];
   const slides = [
     { title: 'Thrift', icon: PiggyBank, tone: 'green', desc: 'Daily, weekly and monthly ajo, target savings, and rotating cycle thrift where one member is paid out each round until everyone has had a turn.' },
-    { title: 'Loan Tracking', icon: HandCoins, tone: 'steel', desc: 'Keep tabs on money you\u2019ve lent and personal loans you\u2019ve taken, with interest, due dates and reminders handled for you.' },
-    { title: 'Payment Portal', icon: Wallet, tone: 'gold', desc: 'Bill clients with branded invoices, collect payments, and issue proper receipts \u2014 all shareable straight to WhatsApp.' },
+    { title: 'Loan Tracking', icon: HandCoins, tone: 'steel', desc: 'Keep tabs on money you’ve lent and personal loans you’ve taken, with interest, due dates and reminders handled for you.' },
+    { title: 'Payment Portal', icon: Wallet, tone: 'gold', desc: 'Bill clients with branded invoices, collect payments, and issue proper receipts — all shareable straight to WhatsApp.' },
   ];
   return (
     <>
@@ -838,7 +843,7 @@ function App() {
   };
   const shareToWhatsApp = (phone, text) => window.open(waHref(phone, text), '_blank');
   const shareImageToWhatsApp = (phone, text, filename) => {
-    flash('Preparing image to share\u2026');
+    flash('Preparing image to share…');
     shareNodeImageToWhatsApp('receipt-print-area', filename, waHref(phone, text));
   };
 
@@ -888,12 +893,12 @@ function App() {
     const list = [];
     loansGiven.forEach((l) => {
       const status = loanStatus(l, 'repayments');
-      if (status === 'overdue') list.push({ id: 'lg-' + l.id, severity: 'high', group: 'Loans given', text: `${l.borrower} is overdue by ${Math.abs(daysFromToday(l.dueDate))} day(s) \u2014 ${fmt(outstandingOf(l, 'repayments'))} outstanding.` });
+      if (status === 'overdue') list.push({ id: 'lg-' + l.id, severity: 'high', group: 'Loans given', text: `${l.borrower} is overdue by ${Math.abs(daysFromToday(l.dueDate))} day(s) — ${fmt(outstandingOf(l, 'repayments'))} outstanding.` });
       else if (status === 'due-soon') list.push({ id: 'lgs-' + l.id, severity: 'medium', group: 'Loans given', text: `${l.borrower}'s repayment is due in ${daysFromToday(l.dueDate)} day(s).` });
     });
     loansReceived.forEach((l) => {
       const status = loanStatus(l, 'refunds');
-      if (status === 'overdue') list.push({ id: 'lr-' + l.id, severity: 'high', group: 'Loans received', text: `You are ${Math.abs(daysFromToday(l.dueDate))} day(s) overdue refunding ${l.lender} \u2014 ${fmt(outstandingOf(l, 'refunds'))} left.` });
+      if (status === 'overdue') list.push({ id: 'lr-' + l.id, severity: 'high', group: 'Loans received', text: `You are ${Math.abs(daysFromToday(l.dueDate))} day(s) overdue refunding ${l.lender} — ${fmt(outstandingOf(l, 'refunds'))} left.` });
       else if (status === 'due-soon') list.push({ id: 'lrs-' + l.id, severity: 'medium', group: 'Loans received', text: `Refund to ${l.lender} is due in ${daysFromToday(l.dueDate)} day(s).` });
     });
     plans.forEach((p) => {
@@ -910,7 +915,7 @@ function App() {
       const status = invoiceStatusOf(inv);
       const client = clientById(inv.clientId);
       const name = client ? client.name : 'Client';
-      if (status === 'overdue') list.push({ id: 'inv-' + inv.id, severity: 'high', group: 'Payments', text: `Invoice ${inv.number} to ${name} is overdue by ${Math.abs(daysFromToday(inv.dueDate))} day(s) \u2014 ${fmt(invoiceTotal(inv))} outstanding.` });
+      if (status === 'overdue') list.push({ id: 'inv-' + inv.id, severity: 'high', group: 'Payments', text: `Invoice ${inv.number} to ${name} is overdue by ${Math.abs(daysFromToday(inv.dueDate))} day(s) — ${fmt(invoiceTotal(inv))} outstanding.` });
       else if (status === 'sent' && daysFromToday(inv.dueDate) <= 3) list.push({ id: 'invs-' + inv.id, severity: 'medium', group: 'Payments', text: `Invoice ${inv.number} to ${name} is due in ${daysFromToday(inv.dueDate)} day(s).` });
     });
     return list.filter((a) => !dismissed.includes(a.id));
@@ -948,7 +953,7 @@ function App() {
     loansReceived.forEach((l) => l.refunds.forEach((r) => acts.push({ date: r.date, text: `You refunded ${fmt(r.amount)} to ${l.lender}`, kind: 'out', scope: 'loans' })));
     receipts.forEach((r) => {
       const client = clientById(r.clientId);
-      acts.push({ date: r.date, text: `Received ${fmt(r.amount)} from ${client ? client.name : (r.clientName || 'a customer')} \u2014 ${r.receiptNo}`, kind: 'in', scope: 'payments' });
+      acts.push({ date: r.date, text: `Received ${fmt(r.amount)} from ${client ? client.name : (r.clientName || 'a customer')} — ${r.receiptNo}`, kind: 'in', scope: 'payments' });
     });
     return acts.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 12);
   }, [contributions, loansGiven, loansReceived, plans, receipts, clients]);
@@ -1007,7 +1012,7 @@ function App() {
     setSettings((s) => ({ ...s, businessName: user.businessName, ownerName: user.name }));
     setCurrentUser(user);
     setActiveModule('home'); setActiveTab('home');
-    flash('Account created \u2014 welcome to PocketLedger!');
+    flash('Account created — welcome to PocketLedger!');
   };
   const handleLogout = () => { setCurrentUser(null); setActiveModule('home'); setActiveTab('home'); };
   const updateLoginEmail = () => {
@@ -1070,7 +1075,7 @@ function App() {
       };
       setReceipts((r) => [rcpt, ...r]);
     }
-    flash('Invoice marked as paid \u2014 receipt generated.');
+    flash('Invoice marked as paid — receipt generated.');
   };
   const submitManualReceipt = () => {
     if (!form.clientId && !form.clientName) { flash('Pick a client or type a payer name.'); return; }
@@ -1100,7 +1105,7 @@ function App() {
     const pending = cyclePendingContributors(plan);
     if (pending.length > 0) {
       const names = pending.map((id) => memberById(id)?.name || 'a member').join(', ');
-      flash(`Can't pay out yet \u2014 waiting on ${names} to contribute this round.`);
+      flash(`Can't pay out yet — waiting on ${names} to contribute this round.`);
       return;
     }
     const recipientId = cycleCurrentRecipientId(plan);
@@ -1119,7 +1124,7 @@ function App() {
       payouts: [],
       startDate: todayISO(),
     } : p));
-    flash(`${plan.name} \u2014 new cycle started. Round 1 of ${plan.memberIds.length} begins today.`);
+    flash(`${plan.name} — new cycle started. Round 1 of ${plan.memberIds.length} begins today.`);
   };
   const addMemberToPlan = (planId, memberId) => {
     if (!memberId) return;
@@ -1182,7 +1187,7 @@ function App() {
         if (data.settings) setSettings((s) => ({ ...s, ...data.settings }));
         flash('Backup imported successfully.');
       } catch (err) {
-        flash('Could not read that file \u2014 is it a PocketLedger backup?');
+        flash('Could not read that file — is it a PocketLedger backup?');
       }
     };
     reader.readAsText(file);
@@ -1211,7 +1216,7 @@ function App() {
   const biodataMessage = (member) => {
     const memberPlans = plans.filter((p) => p.memberIds.includes(member.id));
     const lines = [
-      `*${settings.businessName}* \u2014 Contributor biodata`, '',
+      `*${settings.businessName}* — Contributor biodata`, '',
       `Name: ${member.name}`,
       `Phone: ${member.phone || 'N/A'}`,
       `Total contributed: ${fmt(memberTotal(member.id))}`,
@@ -1243,7 +1248,7 @@ function App() {
       `Issue date: ${new Date(inv.issueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`,
       `Due date: ${new Date(inv.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`,
       '',
-      ...inv.items.map((it) => `${it.desc} \u2014 ${it.qty} x ${fmt(it.price)} = ${fmt(it.qty * it.price)}`),
+      ...inv.items.map((it) => `${it.desc} — ${it.qty} x ${fmt(it.price)} = ${fmt(it.qty * it.price)}`),
       '',
       `Total: ${fmt(total)}`,
       `Status: ${INVOICE_STATUS_LABEL[status]}`,
@@ -1273,7 +1278,7 @@ function App() {
       </div>
       <div className="two-col">
         <div className="panel">
-          <div className="panel-title">Contributions collected \u2014 last 8 weeks</div>
+          <div className="panel-title">Contributions collected — last 8 weeks</div>
           <div style={{ width: '100%', height: 220 }}>
             <ResponsiveContainer>
               <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
@@ -1434,7 +1439,7 @@ function App() {
                   <span className="kb-mono plan-amount">{fmt(p.amount)}</span>
                 </div>
                 <div className="plan-card-name kb-display">{p.name}</div>
-                <div className="plan-card-meta">{p.memberIds.length} contributor(s) \u00b7 {p.frequency}</div>
+                <div className="plan-card-meta">{p.memberIds.length} contributor(s) · {p.frequency}</div>
                 {p.category === 'Target' ? (
                   <ProgressBar value={total} max={p.targetAmount || 1} />
                 ) : p.category === 'Cycle' ? (
@@ -1452,11 +1457,11 @@ function App() {
             <div className="panel-title-row">
               <div>
                 <div className="panel-title">{plan.name}</div>
-                <div className="panel-sub">Tap a cell to mark a round as paid \u00b7 {fmt(plan.amount)} per round</div>
+                <div className="panel-sub">Tap a cell to mark a round as paid · {fmt(plan.amount)} per round</div>
               </div>
               <div className="inline-add">
                 <select className="kb-input" defaultValue="" onChange={(e) => { addMemberToPlan(plan.id, e.target.value); e.target.value = ''; }}>
-                  <option value="" disabled>Add contributor to plan\u2026</option>
+                  <option value="" disabled>Add contributor to plan…</option>
                   {unassigned.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                 </select>
               </div>
@@ -1501,7 +1506,7 @@ function App() {
                 </div>
                 <div className="panel-sub" style={{ marginTop: 10 }}>
                   {cycleRoundsDone(plan)} of {plan.memberIds.length} member(s) paid out so far
-                  {plan.cycleHistory && plan.cycleHistory.length > 0 ? ` \u00b7 ${plan.cycleHistory.length} previous cycle(s) completed` : ''}
+                  {plan.cycleHistory && plan.cycleHistory.length > 0 ? ` · ${plan.cycleHistory.length} previous cycle(s) completed` : ''}
                 </div>
                 {plan.payouts && plan.payouts.length > 0 && (
                   <div className="cycle-history">
@@ -1538,7 +1543,7 @@ function App() {
                           <td key={period}>
                             <button
                               className={`cell-dot ${paid ? 'cell-paid' : 'cell-unpaid'} ${isToday ? 'cell-today' : ''}`}
-                              title={paid ? 'Paid \u2014 tap to undo' : 'Tap to mark paid'}
+                              title={paid ? 'Paid — tap to undo' : 'Tap to mark paid'}
                               onClick={() => toggleContribution(plan.id, memberId, period, plan.amount)}
                             >
                               {paid ? <CheckCircle2 size={15} /> : null}
@@ -1570,7 +1575,7 @@ function App() {
           <div className="panel master-list">
             <div className="search-box">
               <Search size={14} />
-              <input placeholder="Search contributors\u2026" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
+              <input placeholder="Search contributors…" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
             </div>
             <ul className="member-list">
               {filtered.map((m) => (
@@ -1661,7 +1666,7 @@ function App() {
       <>
         <div className="search-box loan-search">
           <Search size={14} />
-          <input placeholder="Search by name\u2026" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input placeholder="Search by name…" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
         {list.length === 0 ? <EmptyState text={emptyText} /> : groups.length === 0 ? <EmptyState text="No match found." /> : (
           <div className="loan-groups">
@@ -1671,7 +1676,7 @@ function App() {
                   <div className="member-avatar kb-display">{g.name.charAt(0)}</div>
                   <div className="person-group-info">
                     <div className="person-group-name kb-display">{g.name}</div>
-                    <div className="panel-sub">{g.loans.length} loan{g.loans.length > 1 ? 's' : ''} \u00b7 {fmt(g.totalPrincipal)} total principal given{personField === 'lender' ? ' to you' : ''}</div>
+                    <div className="panel-sub">{g.loans.length} loan{g.loans.length > 1 ? 's' : ''} · {fmt(g.totalPrincipal)} total principal given{personField === 'lender' ? ' to you' : ''}</div>
                   </div>
                   <button className="btn btn-small btn-ghost" onClick={() => shareToWhatsApp(g.loans[0].phone, biodataMessageForLoanPerson(g))}>
                     <MessageCircle size={13} /> Biodata
@@ -1694,8 +1699,8 @@ function App() {
                             <div className="loan-name kb-display kb-mono">{fmt(l.principal)}</div>
                             <div className="panel-sub">
                               given {new Date(l[dateField]).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                              {' \u00b7 due '}{new Date(l.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                              {l.interestRate > 0 && <span className="kb-mono"> \u00b7 {l.interestRate}%/yr</span>}
+                              {' · due '}{new Date(l.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                              {l.interestRate > 0 && <span className="kb-mono"> · {l.interestRate}%/yr</span>}
                               {plan && <span className="linked-tag"><Link2 size={11} /> {plan.name}</span>}
                             </div>
                           </div>
@@ -1753,7 +1758,7 @@ function App() {
 
   const biodataMessageForLoanPerson = (group) => {
     const lines = [
-      `*${settings.businessName}* \u2014 Account summary`, '',
+      `*${settings.businessName}* — Account summary`, '',
       `Name: ${group.name}`,
       `Loans on record: ${group.loans.length}`,
       `Total principal: ${fmt(group.totalPrincipal)}`,
@@ -1795,9 +1800,9 @@ function App() {
           action={<button className="btn btn-primary" onClick={() => openModal('newClient')}><Plus size={16} /> Add client</button>} />
         <div className="search-box loan-search">
           <Search size={14} />
-          <input placeholder="Search clients\u2026" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
+          <input placeholder="Search clients…" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
         </div>
-        {filtered.length === 0 ? <EmptyState text="No clients yet \u2014 add your first one." /> : (
+        {filtered.length === 0 ? <EmptyState text="No clients yet — add your first one." /> : (
           <div className="plan-card-grid">
             {filtered.map((c) => {
               const clientInvoices = invoices.filter((i) => i.clientId === c.id);
@@ -1830,7 +1835,7 @@ function App() {
           action={<button className="btn btn-primary" onClick={() => openModal('newInvoice', { items: [{ id: uid(), desc: '', qty: 1, price: '' }], issueDate: todayISO() })}><Plus size={16} /> New invoice</button>} />
         <div className="search-box loan-search">
           <Search size={14} />
-          <input placeholder="Search by client or invoice number\u2026" value={invoiceSearch} onChange={(e) => setInvoiceSearch(e.target.value)} />
+          <input placeholder="Search by client or invoice number…" value={invoiceSearch} onChange={(e) => setInvoiceSearch(e.target.value)} />
         </div>
         {clients.length === 0 && <div className="panel-sub" style={{ marginBottom: 12 }}>Add a client first, then create an invoice for them.</div>}
         {filtered.length === 0 ? <EmptyState text="No invoices yet." /> : (
@@ -1881,9 +1886,9 @@ function App() {
           action={<button className="btn btn-primary" onClick={() => openModal('newReceipt', { date: todayISO() })}><Plus size={16} /> Issue receipt</button>} />
         <div className="search-box loan-search">
           <Search size={14} />
-          <input placeholder="Search by payer or receipt number\u2026" value={receiptSearch} onChange={(e) => setReceiptSearch(e.target.value)} />
+          <input placeholder="Search by payer or receipt number…" value={receiptSearch} onChange={(e) => setReceiptSearch(e.target.value)} />
         </div>
-        {filtered.length === 0 ? <EmptyState text="No receipts yet \u2014 they're generated automatically when you mark an invoice paid, or issue one directly." /> : (
+        {filtered.length === 0 ? <EmptyState text="No receipts yet — they're generated automatically when you mark an invoice paid, or issue one directly." /> : (
           <div className="loan-list">
             {filtered.map((r) => {
               const client = clientById(r.clientId);
@@ -1893,7 +1898,7 @@ function App() {
                   <div className="loan-card-top" onClick={() => setPaymentReceiptDoc(r)}>
                     <div>
                       <span className="loan-name">{r.receiptNo} &middot; {client ? client.name : (r.clientName || 'Walk-in customer')}</span>
-                      <div className="plan-card-meta">{new Date(r.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}{invoice ? ` \u00b7 for ${invoice.number}` : ''}</div>
+                      <div className="plan-card-meta">{new Date(r.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}{invoice ? ` · for ${invoice.number}` : ''}</div>
                     </div>
                     <div className="loan-card-right">
                       <Stamp status="completed" label="Paid" />
@@ -1921,7 +1926,7 @@ function App() {
     return (
       <>
         <SectionHeader eyebrow="Stay on top of it" title="Alerts & notifications" />
-        {alerts.length === 0 ? <EmptyState text="You're all caught up \u2014 no open alerts." /> : groups.map((g) => {
+        {alerts.length === 0 ? <EmptyState text="You're all caught up — no open alerts." /> : groups.map((g) => {
           const items = alerts.filter((a) => a.group === g);
           if (items.length === 0) return null;
           return (
@@ -1960,7 +1965,7 @@ function App() {
         </div>
         <div className="field-row">
           <div className="field"><label>New password</label>
-            <input className="kb-input" type="password" value={newLoginPassword} onChange={(e) => setNewLoginPassword(e.target.value)} placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" />
+            <input className="kb-input" type="password" value={newLoginPassword} onChange={(e) => setNewLoginPassword(e.target.value)} placeholder="••••••••" />
           </div>
           <div className="field" style={{ flex: '0 0 auto', alignSelf: 'flex-end' }}>
             <button className="btn btn-outline btn-small" onClick={updateLoginPassword}>Update password</button>
@@ -1973,7 +1978,7 @@ function App() {
           <div className="panel-title">Business & receipt details</div>
           <div className="field"><label>Business / ledger name</label>
             <input className="kb-input" value={settings.businessName} onChange={(e) => setSettings((s) => ({ ...s, businessName: e.target.value }))} placeholder="Only needed for Payments & Thrift receipts" />
-            <div className="field-hint">Only required if you use the Payment Portal (invoices/receipts) or share Thrift receipts \u2014 loan tracking works fine without it.</div>
+            <div className="field-hint">Only required if you use the Payment Portal (invoices/receipts) or share Thrift receipts — loan tracking works fine without it.</div>
           </div>
           <div className="field"><label>Your name (shown on receipts)</label>
             <input className="kb-input" value={settings.ownerName} onChange={(e) => setSettings((s) => ({ ...s, ownerName: e.target.value }))} placeholder="Optional" />
@@ -1986,7 +1991,7 @@ function App() {
               <input className="kb-input" value={settings.countryCode} onChange={(e) => setSettings((s) => ({ ...s, countryCode: e.target.value.replace(/\D/g, '') }))} placeholder="234" />
             </div>
           </div>
-          <div className="panel-sub">Used to normalise phone numbers (e.g. 0803\u2026 \u2192 {settings.countryCode}803\u2026) when opening WhatsApp share links.</div>
+          <div className="panel-sub">Used to normalise phone numbers (e.g. 0803… \u2192 {settings.countryCode}803…) when opening WhatsApp share links.</div>
         </div>
 
         <div className="panel">
@@ -2025,7 +2030,7 @@ function App() {
             </div>
             <div className="field-row">
               <div className="field"><label>Business phone</label>
-                <input className="kb-input" value={settings.businessPhone} onChange={(e) => setSettings((s) => ({ ...s, businessPhone: e.target.value }))} placeholder="080\u2026" />
+                <input className="kb-input" value={settings.businessPhone} onChange={(e) => setSettings((s) => ({ ...s, businessPhone: e.target.value }))} placeholder="080…" />
               </div>
               <div className="field"><label>Business email</label>
                 <input className="kb-input" value={settings.businessEmail} onChange={(e) => setSettings((s) => ({ ...s, businessEmail: e.target.value }))} placeholder="hello@business.com" />
@@ -2286,7 +2291,7 @@ function App() {
         .field label{display:block;font-size:12px;font-weight:600;color:var(--ink-soft);margin-bottom:5px;}
         .field .kb-input{width:100%;}
         .field-row{display:flex;gap:10px;}
-        .field-row .field{flex:1;}
+        .field-row .field{flex:1;min-width:0;}
         .checkbox-list{display:flex;flex-direction:column;gap:6px;max-height:150px;overflow-y:auto;border:1px solid var(--paper-line);border-radius:8px;padding:10px;}
         .checkbox-list label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:400;color:var(--ink);}
         .balance-breakdown{background:#F8F5EB;border:1px solid var(--paper-line);border-radius:10px;padding:12px 14px;margin:12px 0 6px;display:flex;flex-direction:column;gap:6px;}
@@ -2348,6 +2353,7 @@ function App() {
         .logo-preview img{width:100%;height:100%;object-fit:cover;}
         .invoice-items-edit{display:flex;flex-direction:column;gap:8px;}
         .invoice-item-row{display:flex;gap:6px;align-items:center;}
+        .invoice-item-row input{min-width:0;}
         .invoice-doc-head{display:flex;align-items:center;gap:12px;margin-bottom:6px;}
         .invoice-logo{width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0;}
         .client-card{cursor:default;}
@@ -2368,6 +2374,18 @@ function App() {
           .home-topbar, .module-topbar{padding:16px 18px;}
           .carousel{padding:18px 44px;}
           .bottom-nav-item span{font-size:9.5px;}
+        }
+        @media (max-width:480px){
+          .stat-grid{grid-template-columns:1fr;}
+          .home-content, .module-content{padding:14px;}
+          .home-topbar, .module-topbar{padding:14px;}
+          .carousel{padding:16px 34px;}
+          .carousel-arrow-left{left:4px;}
+          .carousel-arrow-right{right:4px;}
+          .field-row{flex-direction:column;gap:0;}
+          .invoice-item-row{flex-wrap:wrap;}
+          .invoice-item-row input{flex:1 1 100px;}
+          .modal-card{max-width:100%;}
         }
       `}</style>
 
@@ -2505,7 +2523,7 @@ function App() {
             <input className="kb-input" value={form.name || ''} onChange={(e) => setField('name', e.target.value)} placeholder="e.g. Blessing Nwachukwu" />
           </div>
           <div className="field"><label>Phone number</label>
-            <input className="kb-input" value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} placeholder="080\u2026" />
+            <input className="kb-input" value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} placeholder="080…" />
           </div>
           <button className="btn btn-primary" onClick={submitNewMember}>Add contributor</button>
         </Modal>
@@ -2516,7 +2534,7 @@ function App() {
           <div className="field"><label>Borrower's name</label>
             <input className="kb-input" list="borrower-names" value={form.borrower || ''} onChange={(e) => setField('borrower', e.target.value)} placeholder="Who is receiving this loan?" />
             <datalist id="borrower-names">{borrowerNames.map((n) => <option key={n} value={n} />)}</datalist>
-            <div className="field-hint">Type an existing name to add another loan for that person \u2014 it'll group with their other loans.</div>
+            <div className="field-hint">Type an existing name to add another loan for that person — it'll group with their other loans.</div>
           </div>
           <div className="field-row">
             <div className="field"><label>Principal amount</label>
@@ -2535,7 +2553,7 @@ function App() {
             </div>
           </div>
           <div className="field"><label>Phone (for WhatsApp reminders, optional)</label>
-            <input className="kb-input" value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} placeholder="080\u2026" />
+            <input className="kb-input" value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} placeholder="080…" />
           </div>
           <div className="field"><label>Link to a thrift plan (optional)</label>
             <select className="kb-input" value={form.linkedPlanId || ''} onChange={(e) => setField('linkedPlanId', e.target.value)}>
@@ -2555,7 +2573,7 @@ function App() {
           <div className="field"><label>Lender's name</label>
             <input className="kb-input" list="lender-names" value={form.lender || ''} onChange={(e) => setField('lender', e.target.value)} placeholder="Who gave you this loan?" />
             <datalist id="lender-names">{lenderNames.map((n) => <option key={n} value={n} />)}</datalist>
-            <div className="field-hint">Type an existing name to add another loan from that lender \u2014 it'll group with the others.</div>
+            <div className="field-hint">Type an existing name to add another loan from that lender — it'll group with the others.</div>
           </div>
           <div className="field-row">
             <div className="field"><label>Principal amount</label>
@@ -2574,7 +2592,7 @@ function App() {
             </div>
           </div>
           <div className="field"><label>Phone (for WhatsApp reminders, optional)</label>
-            <input className="kb-input" value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} placeholder="080\u2026" />
+            <input className="kb-input" value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} placeholder="080…" />
           </div>
           <div className="field"><label>Link to a thrift plan (optional)</label>
             <select className="kb-input" value={form.linkedPlanId || ''} onChange={(e) => setField('linkedPlanId', e.target.value)}>
@@ -2594,7 +2612,7 @@ function App() {
             <input className="kb-input" value={form.name || ''} onChange={(e) => setField('name', e.target.value)} placeholder="e.g. Bright Star Ventures" />
           </div>
           <div className="field"><label>Phone number</label>
-            <input className="kb-input" value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} placeholder="080\u2026" />
+            <input className="kb-input" value={form.phone || ''} onChange={(e) => setField('phone', e.target.value)} placeholder="080…" />
           </div>
           <div className="field"><label>Email (optional)</label>
             <input className="kb-input" value={form.email || ''} onChange={(e) => setField('email', e.target.value)} placeholder="client@example.com" />
