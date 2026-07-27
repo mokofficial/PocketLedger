@@ -15,9 +15,7 @@
 <script src="https://unpkg.com/recharts@2/umd/Recharts.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
-  html, body { margin: 0; padding: 0; overflow-x: hidden; width: 100%; max-width: 100%; }
-  *, *::before, *::after { box-sizing: border-box; }
-  #root { overflow-x: hidden; width: 100%; }
+  html, body { margin: 0; padding: 0; }
 </style>
 </head>
 <body>
@@ -41,6 +39,25 @@ const {
 const uid = () => Math.random().toString(36).slice(2, 10);
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const dayMs = 86400000;
+
+// Pulls a single name + phone number from the device's own contact list, where supported
+// (Chrome on Android, mainly). Returns null if unsupported, cancelled, or the pick failed.
+const contactPickerSupported = () => typeof navigator !== 'undefined' && 'contacts' in navigator && 'ContactsManager' in window;
+async function pickDeviceContact() {
+  if (!contactPickerSupported()) return null;
+  try {
+    const results = await navigator.contacts.select(['name', 'tel'], { multiple: false });
+    if (!results || !results.length) return null;
+    const picked = results[0];
+    return {
+      name: (picked.name && picked.name[0]) || '',
+      phone: (picked.tel && picked.tel[0]) || '',
+    };
+  } catch (err) {
+    console.warn('PocketLedger: contact picker unavailable or cancelled.', err);
+    return null;
+  }
+}
 
 function lastNDates(n, stepDays) {
   const arr = [];
@@ -99,6 +116,14 @@ function loanStatus(item, key) {
   if (daysFromToday(item.dueDate) < 0) return 'overdue';
   if (daysFromToday(item.dueDate) <= 7) return 'due-soon';
   return 'active';
+}
+// Running-tab loans: a flowing list of borrow/payment entries for one contact,
+// summed as they go rather than tracked against a fixed principal + due date.
+function tabEntryTotal(entries, type) {
+  return (entries || []).filter((e) => e.type === type).reduce((s, e) => s + Number(e.amount || 0), 0);
+}
+function tabBalance(tab) {
+  return tabEntryTotal(tab.entries, 'borrow') - tabEntryTotal(tab.entries, 'payment');
 }
 const STATUS_LABEL = {
   completed: 'Cleared', overdue: 'Overdue', 'due-soon': 'Due soon', active: 'Active'
@@ -187,6 +212,33 @@ function seedLoansReceived() {
     { id: 'lr1', lender: 'Mama Bisi', phone: '0813 500 2291', principal: 100000, interestRate: 8, dateReceived: '2026-05-01', dueDate: '2026-08-05', linkedPlanId: 'tp3', note: 'Bridge funds for December target', refunds: [{ id: uid(), date: '2026-06-01', amount: 30000 }] },
     { id: 'lr3', lender: 'Mama Bisi', phone: '0813 500 2291', principal: 25000, interestRate: 0, dateReceived: '2026-07-01', dueDate: '2026-09-01', linkedPlanId: null, note: 'Second, separate advance', refunds: [] },
     { id: 'lr2', lender: 'First Trust Cooperative', phone: '', principal: 60000, interestRate: 0, dateReceived: '2026-02-01', dueDate: '2026-06-01', linkedPlanId: null, note: 'Shop capital', refunds: [{ id: uid(), date: '2026-05-01', amount: 60000 }] },
+  ];
+}
+
+function seedLoanContacts() {
+  return [
+    { id: 'lc1', name: 'Chika Eze', phone: '0803 771 2290' },
+    { id: 'lc2', name: 'Corner Shop — Baba Musa', phone: '0806 220 4471' },
+  ];
+}
+function seedLoanTabs() {
+  return [
+    {
+      id: 'lt1', contactId: 'lc1', note: 'Ongoing small borrowing between us',
+      entries: [
+        { id: uid(), type: 'borrow', amount: 8000, date: '2026-06-02', note: 'Transport money' },
+        { id: uid(), type: 'borrow', amount: 5000, date: '2026-06-18', note: '' },
+        { id: uid(), type: 'payment', amount: 6000, date: '2026-06-25', note: 'Part payment' },
+      ],
+    },
+    {
+      id: 'lt2', contactId: 'lc2', note: 'Shop credit tab',
+      entries: [
+        { id: uid(), type: 'borrow', amount: 3500, date: '2026-07-01', note: 'Supplies on credit' },
+        { id: uid(), type: 'payment', amount: 3500, date: '2026-07-10', note: '' },
+        { id: uid(), type: 'borrow', amount: 4200, date: '2026-07-20', note: '' },
+      ],
+    },
   ];
 }
 
@@ -323,6 +375,35 @@ function AddPaymentRow({ label, onAdd }) {
       >
         <Plus size={14} /> {label}
       </button>
+    </div>
+  );
+}
+function AddTabEntryRow({ onAdd }) {
+  const [type, setType] = useState('borrow');
+  const [amount, setAmount] = useState('');
+  const [date, setDate] = useState(todayISO());
+  const [note, setNote] = useState('');
+  const submit = () => {
+    if (!amount || Number(amount) <= 0) return;
+    onAdd({ type, amount: Number(amount), date, note: note.trim() });
+    setAmount(''); setNote('');
+  };
+  return (
+    <div className="add-tab-entry-row">
+      <div className="tab-entry-type-toggle">
+        <button type="button" className={`tab-type-btn ${type === 'borrow' ? 'tab-type-active-borrow' : ''}`} onClick={() => setType('borrow')}>
+          <ArrowDownRight size={13} /> Borrowed
+        </button>
+        <button type="button" className={`tab-type-btn ${type === 'payment' ? 'tab-type-active-payment' : ''}`} onClick={() => setType('payment')}>
+          <ArrowUpRight size={13} /> Paid back
+        </button>
+      </div>
+      <div className="add-tab-entry-fields">
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="kb-input kb-mono" />
+        <input type="number" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)} className="kb-input kb-mono" style={{ width: 110 }} />
+        <input type="text" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} className="kb-input" style={{ flex: 1, minWidth: 0 }} />
+        <button className="btn btn-small btn-primary" onClick={submit}><Plus size={14} /> Add</button>
+      </div>
     </div>
   );
 }
@@ -620,8 +701,8 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
     <div className="auth-wrap">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
-        .auth-wrap{min-height:100vh;width:100%;display:flex;align-items:center;justify-content:center;background:#1B2A4A;background-image:radial-gradient(circle at 20% 20%, rgba(183,138,46,0.18), transparent 45%), radial-gradient(circle at 80% 80%, rgba(31,122,92,0.18), transparent 45%);font-family:'IBM Plex Sans',sans-serif;padding:20px;}
-        .auth-card{width:100%;max-width:400px;background:#F7F3EA;border-radius:16px;padding:36px 32px;box-shadow:0 24px 70px rgba(0,0,0,0.35);}
+        .auth-wrap{min-height:100vh;width:100%;display:flex;justify-content:center;overflow-y:auto;background:#1B2A4A;background-image:radial-gradient(circle at 20% 20%, rgba(183,138,46,0.18), transparent 45%), radial-gradient(circle at 80% 80%, rgba(31,122,92,0.18), transparent 45%);font-family:'IBM Plex Sans',sans-serif;padding:20px;}
+        .auth-card{width:100%;max-width:400px;margin:auto;background:#F7F3EA;border-radius:16px;padding:36px 32px;box-shadow:0 24px 70px rgba(0,0,0,0.35);}
         .auth-logo{display:flex;align-items:center;gap:10px;margin-bottom:6px;}
         .auth-logo-mark{width:38px;height:38px;border-radius:50%;background:#B78A2E;display:flex;align-items:center;justify-content:center;color:#1B2A4A;}
         .auth-title{font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:#1B2A4A;}
@@ -641,9 +722,6 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
         .auth-hint{text-align:center;font-size:11.5px;color:#8B8578;margin-top:18px;}
         .auth-demo-box{margin-top:16px;background:#EFEAE0;border-radius:9px;padding:10px 12px;font-size:12px;color:#5B6478;text-align:center;}
         .auth-demo-fill{display:block;margin:6px auto 0;background:none;border:none;color:#B78A2E;font-weight:600;font-size:12px;cursor:pointer;padding:0;}
-        @media (max-width:480px){
-          .auth-card{padding:28px 20px;}
-        }
       `}</style>
       <div className="auth-card">
         <div className="auth-logo">
@@ -771,6 +849,8 @@ function App() {
   const [contributions, setContributions] = useState(() => (PERSISTED && PERSISTED.contributions) || seedContributions(seedPlans()));
   const [loansGiven, setLoansGiven] = useState(() => (PERSISTED && PERSISTED.loansGiven) || seedLoansGiven());
   const [loansReceived, setLoansReceived] = useState(() => (PERSISTED && PERSISTED.loansReceived) || seedLoansReceived());
+  const [loanContacts, setLoanContacts] = useState(() => (PERSISTED && PERSISTED.loanContacts) || seedLoanContacts());
+  const [loanTabs, setLoanTabs] = useState(() => (PERSISTED && PERSISTED.loanTabs) || seedLoanTabs());
   const [clients, setClients] = useState(() => (PERSISTED && PERSISTED.clients) || seedClients());
   const [invoices, setInvoices] = useState(() => (PERSISTED && PERSISTED.invoices) || seedInvoices());
   const [receipts, setReceipts] = useState(() => (PERSISTED && PERSISTED.receipts) || seedReceipts());
@@ -788,6 +868,8 @@ function App() {
   const [memberSearch, setMemberSearch] = useState('');
   const [loanGivenSearch, setLoanGivenSearch] = useState('');
   const [loanReceivedSearch, setLoanReceivedSearch] = useState('');
+  const [loanTabSearch, setLoanTabSearch] = useState('');
+  const [expandedTab, setExpandedTab] = useState(null);
   const [settings, setSettings] = useState(() => (PERSISTED && PERSISTED.settings) || seedSettings());
   const [newLoginEmail, setNewLoginEmail] = useState('');
   const [newLoginPassword, setNewLoginPassword] = useState('');
@@ -809,7 +891,7 @@ function App() {
   useEffect(() => {
     const payload = {
       savedAt: new Date().toISOString(),
-      users, members, plans, contributions, loansGiven, loansReceived,
+      users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs,
       clients, invoices, receipts, settings,
     };
     try {
@@ -817,7 +899,7 @@ function App() {
     } catch (err) {
       console.warn('PocketLedger: could not save data to this device.', err);
     }
-  }, [users, members, plans, contributions, loansGiven, loansReceived, clients, invoices, receipts, settings]);
+  }, [users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, clients, invoices, receipts, settings]);
 
   useEffect(() => {
     try {
@@ -852,67 +934,6 @@ function App() {
   const openModal = (type, initial = {}) => { setModal(type); setForm(initial); };
   const closeModal = () => { setModal(null); setForm({}); };
   const setField = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-
-  /* ---------- back button / swipe-back navigation ---------- */
-  const closeAllOverlays = () => { closeModal(); setInvoiceDoc(null); setReceipt(null); setPaymentReceiptDoc(null); };
-  const historyInitedRef = useRef(false);
-  const isRestoringRef = useRef(false);
-  const exitArmedRef = useRef(false);
-  const exitTimerRef = useRef(null);
-  const pageSnapshot = (mod, tab, planId) => ({ kb: true, module: mod, tab, planId: planId || null });
-
-  // Establish (once per login) a base "Home" history entry so the very first
-  // back-press, once the user has drilled anywhere, has something to land on.
-  useEffect(() => {
-    if (currentUser && !historyInitedRef.current) {
-      historyInitedRef.current = true;
-      window.history.replaceState(pageSnapshot('home', 'home', null), '');
-    }
-    if (!currentUser) historyInitedRef.current = false;
-  }, [currentUser]);
-
-  // Push a new history entry for every page-level move (module, tab, or
-  // drilled-into plan), so back/swipe-back can step through them one at a time.
-  useEffect(() => {
-    if (!currentUser || !historyInitedRef.current) return;
-    if (isRestoringRef.current) { isRestoringRef.current = false; return; }
-    window.history.pushState(pageSnapshot(activeModule, activeTab, selectedPlanId), '');
-  }, [activeModule, activeTab, selectedPlanId]);
-
-  // Handle the hardware/gesture back button and browser back navigation.
-  useEffect(() => {
-    const handlePopState = (e) => {
-      if (!currentUser) return;
-      const overlayOpen = !!(modal || invoiceDoc || receipt || paymentReceiptDoc);
-      if (overlayOpen) {
-        // First priority: back closes whatever's open, without also leaving the page.
-        closeAllOverlays();
-        window.history.pushState(pageSnapshot(activeModule, activeTab, selectedPlanId), '');
-        return;
-      }
-      const atHome = activeModule === 'home' && activeTab === 'home';
-      if (atHome) {
-        if (exitArmedRef.current) return; // second press in a row: let it actually exit
-        exitArmedRef.current = true;
-        flash('Press back again to exit.');
-        window.history.pushState(pageSnapshot('home', 'home', null), '');
-        clearTimeout(exitTimerRef.current);
-        exitTimerRef.current = setTimeout(() => { exitArmedRef.current = false; }, 2200);
-        return;
-      }
-      const s = e.state;
-      isRestoringRef.current = true;
-      if (s && s.kb) {
-        setActiveModule(s.module);
-        setActiveTab(s.tab);
-        setSelectedPlanId(s.planId || null);
-      } else {
-        setActiveModule('home'); setActiveTab('home'); setSelectedPlanId(null);
-      }
-    };
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, [currentUser, modal, invoiceDoc, receipt, paymentReceiptDoc, activeModule, activeTab, selectedPlanId]);
 
   /* ---------- lookups ---------- */
   const memberById = (id) => members.find((m) => m.id === id);
@@ -1037,6 +1058,12 @@ function App() {
     setPlans((p) => [...p, plan]);
     setSelectedPlanId(plan.id);
     closeModal();
+  };
+  const importDeviceContact = async (onFound) => {
+    if (!contactPickerSupported()) { flash('Contact access isn\u2019t supported on this browser/device — try Chrome on Android, or enter details manually.'); return; }
+    const contact = await pickDeviceContact();
+    if (!contact) { flash('No contact selected.'); return; }
+    onFound(contact);
   };
   const submitNewMember = () => {
     if (!form.name) return;
@@ -1200,9 +1227,49 @@ function App() {
     flash('Refund recorded.');
   };
 
+  /* ---------- running-tab loans ---------- */
+  const submitNewLoanContact = () => {
+    if (!form.name) return null;
+    const contact = { id: uid(), name: form.name, phone: form.phone || '' };
+    setLoanContacts((c) => [...c, contact]);
+    return contact;
+  };
+  const submitNewLoanTab = () => {
+    let contactId = form.contactId;
+    if (form.contactMode === 'new') {
+      if (!form.newContactName) { flash('Enter a name for this person.'); return; }
+      const contact = { id: uid(), name: form.newContactName, phone: form.newContactPhone || '' };
+      setLoanContacts((c) => [...c, contact]);
+      contactId = contact.id;
+    }
+    if (!contactId) { flash('Pick or add the person for this tab.'); return; }
+    const tab = { id: uid(), contactId, note: form.note || '', entries: [] };
+    setLoanTabs((t) => [tab, ...t]);
+    closeModal();
+    flash('Tab created — add entries as borrowing or payments happen.');
+  };
+  const addTabEntry = (tabId, entry) => {
+    setLoanTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, entries: [...t.entries, { id: uid(), ...entry }] } : t));
+    flash(entry.type === 'borrow' ? 'Borrowing added to the tab.' : 'Payment added to the tab.');
+  };
+  const updateTabEntry = (tabId, entryId, changes) => {
+    setLoanTabs((prev) => prev.map((t) => t.id === tabId
+      ? { ...t, entries: t.entries.map((e) => e.id === entryId ? { ...e, ...changes } : e) }
+      : t));
+  };
+  const deleteTabEntry = (tabId, entryId) => {
+    if (!window.confirm('Delete this entry? This cannot be undone.')) return;
+    setLoanTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, entries: t.entries.filter((e) => e.id !== entryId) } : t));
+  };
+  const deleteLoanTab = (tabId) => {
+    if (!window.confirm('Delete this whole tab and its entries? This cannot be undone.')) return;
+    setLoanTabs((prev) => prev.filter((t) => t.id !== tabId));
+  };
+  const loanContactById = (id) => loanContacts.find((c) => c.id === id);
+
   /* ---------- import / export ---------- */
   const exportBackup = () => {
-    const payload = { exportedAt: new Date().toISOString(), members, plans, contributions, loansGiven, loansReceived, clients, invoices, receipts, settings };
+    const payload = { exportedAt: new Date().toISOString(), members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, clients, invoices, receipts, settings };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1242,6 +1309,8 @@ function App() {
         setContributions(data.contributions || []);
         setLoansGiven(data.loansGiven || []);
         setLoansReceived(data.loansReceived || []);
+        setLoanContacts(data.loanContacts || []);
+        setLoanTabs(data.loanTabs || []);
         setClients(data.clients || []);
         setInvoices(data.invoices || []);
         setReceipts(data.receipts || []);
@@ -1262,6 +1331,8 @@ function App() {
     setContributions(seedContributions(p));
     setLoansGiven(seedLoansGiven());
     setLoansReceived(seedLoansReceived());
+    setLoanContacts(seedLoanContacts());
+    setLoanTabs(seedLoanTabs());
     setClients(seedClients());
     setInvoices(seedInvoices());
     setReceipts(seedReceipts());
@@ -1269,7 +1340,7 @@ function App() {
   };
   const clearAllData = () => {
     if (!window.confirm('This deletes every plan, contributor, loan, client, invoice and receipt. This cannot be undone. Continue?')) return;
-    setMembers([]); setPlans([]); setContributions([]); setLoansGiven([]); setLoansReceived([]); setClients([]); setInvoices([]); setReceipts([]);
+    setMembers([]); setPlans([]); setContributions([]); setLoansGiven([]); setLoansReceived([]); setLoanContacts([]); setLoanTabs([]); setClients([]); setInvoices([]); setReceipts([]);
     flash('All data cleared.');
   };
 
@@ -1398,7 +1469,8 @@ function App() {
       <div className="stat-grid">
         <StatCard label="Owed to you (loans given)" value={fmt(totalOwedToMe)} icon={ArrowDownRight} tone="steel" sub={`${loansGiven.length} loan(s) recorded`} />
         <StatCard label="You owe (loans received)" value={fmt(totalIOwe)} icon={ArrowUpRight} tone="brick" sub={`${loansReceived.length} loan(s) recorded`} />
-        <StatCard label="Total loans on file" value={loansGiven.length + loansReceived.length} icon={HandCoins} tone="gold" sub="Given + received" />
+        <StatCard label="Running tabs net balance" value={fmt(loanTabs.reduce((s, t) => s + tabBalance(t), 0))} icon={Repeat} tone="steel" sub={`${loanTabs.length} tab(s) open`} />
+        <StatCard label="Total loans on file" value={loansGiven.length + loansReceived.length + loanTabs.length} icon={HandCoins} tone="gold" sub="Given + received + tabs" />
         <StatCard label="Loan alerts" value={moduleAlerts(['Loans given', 'Loans received']).length} icon={AlertTriangle} tone="green" sub="Needs attention" />
       </div>
       <div className="two-col">
@@ -1658,7 +1730,7 @@ function App() {
                 <div className="member-avatar-lg kb-display">{selected.name.charAt(0)}</div>
                 <div style={{ flex: 1 }}>
                   <div className="kb-display detail-name">{selected.name}</div>
-                  <div className="panel-sub"><Phone size={12} style={{ verticalAlign: '-2px' }} /> {selected.phone || 'No phone on file'}</div>
+                  <div className="panel-sub"><Phone size={12} style={{ verticalAlign: '-2px' }} /> {selected.phone ? <a className="tel-link" href={`tel:${selected.phone.replace(/[^0-9+]/g, '')}`}>{selected.phone}</a> : 'No phone on file'}</div>
                 </div>
                 <button className="btn btn-small btn-ghost" onClick={() => shareToWhatsApp(selected.phone, biodataMessage(selected))}>
                   <MessageCircle size={13} /> Share biodata
@@ -1844,11 +1916,89 @@ function App() {
     </>
   );
 
+  const renderLoansTabs = () => {
+    const filtered = loanTabs.filter((t) => {
+      const contact = loanContactById(t.contactId);
+      return !contact || contact.name.toLowerCase().includes(loanTabSearch.toLowerCase());
+    });
+    return (
+      <>
+        <SectionHeader eyebrow="Running tabs" title="Ongoing borrowing tabs"
+          action={<button className="btn btn-primary" onClick={() => openModal('newLoanTab', { contactMode: loanContacts.length ? 'existing' : 'new' })}><Plus size={16} /> New tab</button>} />
+        <div className="field-hint" style={{ marginBottom: 14 }}>
+          A tab is for informal, back-and-forth borrowing with one person — money goes back and forth over time and the balance is just the running sum, rather than a single fixed loan with a due date.
+        </div>
+        <div className="search-box loan-search">
+          <Search size={14} />
+          <input placeholder="Search by name…" value={loanTabSearch} onChange={(e) => setLoanTabSearch(e.target.value)} />
+        </div>
+        {loanTabs.length === 0 ? <EmptyState text="No running tabs yet — start one for anyone you lend to or borrow from casually." /> : filtered.length === 0 ? <EmptyState text="No match found." /> : (
+          <div className="loan-list" style={{ marginTop: 14 }}>
+            {filtered.map((t) => {
+              const contact = loanContactById(t.contactId);
+              const balance = tabBalance(t);
+              const isOpen = expandedTab === t.id;
+              const sortedEntries = [...t.entries].sort((a, b) => new Date(b.date) - new Date(a.date));
+              const balanceCls = balance > 0 ? 'tab-balance-owed' : balance < 0 ? 'tab-balance-owe' : 'tab-balance-clear';
+              const balanceLabel = balance > 0 ? 'owes you' : balance < 0 ? 'you owe' : 'settled';
+              return (
+                <div key={t.id} className="loan-card">
+                  <div className="loan-card-top" onClick={() => setExpandedTab(isOpen ? null : t.id)}>
+                    <div>
+                      <div className="loan-name kb-display">{contact ? contact.name : 'Unknown contact'}</div>
+                      <div className="panel-sub">
+                        {t.entries.length} entr{t.entries.length === 1 ? 'y' : 'ies'}
+                        {contact && contact.phone && (
+                          <>
+                            {' · '}
+                            <a className="tel-link" href={`tel:${contact.phone.replace(/[^0-9+]/g, '')}`} onClick={(e) => e.stopPropagation()}>{contact.phone}</a>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="loan-card-right">
+                      <div className={`kb-mono outstanding ${balanceCls}`}><span>{balanceLabel}</span>{fmt(Math.abs(balance))}</div>
+                      <button className="icon-btn" onClick={(e) => { e.stopPropagation(); deleteLoanTab(t.id); }}><Trash2 size={15} /></button>
+                      <ChevronDown size={16} className={`chev ${isOpen ? 'chev-open' : ''}`} />
+                    </div>
+                  </div>
+                  {isOpen && (
+                    <div className="loan-card-body">
+                      {t.note && <div className="loan-note">“{t.note}”</div>}
+                      <div className="panel-title" style={{ fontSize: 13, marginTop: 12 }}>Transactions</div>
+                      {sortedEntries.length === 0 ? <EmptyState text="No entries yet — add the first borrow or payment below." /> : (
+                        <ul className="tab-entry-list">
+                          {sortedEntries.map((e) => (
+                            <li key={e.id} className={`tab-entry-row tab-entry-row-${e.type}`}>
+                              {e.type === 'borrow' ? <ArrowDownRight size={14} className="tab-balance-owed" /> : <ArrowUpRight size={14} className="tab-balance-clear" />}
+                              <span className="tab-entry-amount kb-mono">{e.type === 'borrow' ? '+' : '−'}{fmt(e.amount)}</span>
+                              <span className="tab-entry-note">{e.note || (e.type === 'borrow' ? 'Borrowed' : 'Paid back')}</span>
+                              <span className="tab-entry-date kb-mono">{new Date(e.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                              <div className="tab-entry-actions">
+                                <button className="icon-btn" onClick={() => openModal('editTabEntry', { tabId: t.id, entryId: e.id, type: e.type, amount: e.amount, date: e.date, note: e.note || '' })}><Edit3 size={13} /></button>
+                                <button className="icon-btn" onClick={() => deleteTabEntry(t.id, e.id)}><Trash2 size={13} /></button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      <AddTabEntryRow onAdd={(entry) => addTabEntry(t.id, entry)} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </>
+    );
+  };
+
   const renderHome = () => (
     <HomeScreen
       user={currentUser}
       settings={settings}
-      stats={{ plans: plans.length, loans: loansGiven.length + loansReceived.length, invoices: invoices.length }}
+      stats={{ plans: plans.length, loans: loansGiven.length + loansReceived.length + loanTabs.length, invoices: invoices.length }}
       onPick={openModule}
     />
   );
@@ -1871,7 +2021,7 @@ function App() {
               return (
                 <div key={c.id} className="plan-card client-card">
                   <div className="plan-card-top"><span className="plan-card-name">{c.name}</span></div>
-                  <div className="plan-card-meta"><Phone size={12} style={{ verticalAlign: '-2px' }} /> {c.phone || 'No phone'}</div>
+                  <div className="plan-card-meta"><Phone size={12} style={{ verticalAlign: '-2px' }} /> {c.phone ? <a className="tel-link" href={`tel:${c.phone.replace(/[^0-9+]/g, '')}`} onClick={(e) => e.stopPropagation()}>{c.phone}</a> : 'No phone'}</div>
                   {c.email && <div className="plan-card-meta"><Mail size={12} style={{ verticalAlign: '-2px' }} /> {c.email}</div>}
                   {c.address && <div className="plan-card-meta"><MapPin size={12} style={{ verticalAlign: '-2px' }} /> {c.address}</div>}
                   <div className="plan-card-total" style={{ marginTop: 8 }}>{clientInvoices.length} invoice(s) &middot; {fmt(owed)} outstanding</div>
@@ -2160,11 +2310,12 @@ function App() {
       { id: 'loansOverview', label: 'Overview', icon: LayoutDashboard },
       { id: 'loansGiven', label: 'Given', icon: HandCoins },
       { id: 'loansReceived', label: 'Received', icon: Landmark },
+      { id: 'loansTabs', label: 'Tabs', icon: Repeat },
     ],
     payments: [
       { id: 'paymentsOverview', label: 'Overview', icon: LayoutDashboard },
-      { id: 'invoices', label: 'Invoices', icon: FileText },
       { id: 'clients', label: 'Clients', icon: Users },
+      { id: 'invoices', label: 'Invoices', icon: FileText },
       { id: 'receipts', label: 'Receipts', icon: Receipt },
     ],
   };
@@ -2253,6 +2404,8 @@ function App() {
         .plan-amount{font-size:13px;color:var(--ink-soft);}
         .plan-card-name{font-size:16.5px;font-weight:600;margin-bottom:4px;}
         .plan-card-meta{font-size:12px;color:var(--ink-soft);margin-bottom:10px;}
+        .tel-link{color:var(--ink-soft);text-decoration:underline;text-decoration-color:transparent;transition:text-decoration-color .15s;}
+        .tel-link:hover, .tel-link:active{text-decoration-color:currentColor;}
         .plan-card-total{font-size:13px;font-weight:600;}
         .tag{display:inline-block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;padding:3px 9px;border-radius:20px;}
         .tag-green{background:var(--green-bg);color:var(--green);}
@@ -2352,7 +2505,7 @@ function App() {
         .field label{display:block;font-size:12px;font-weight:600;color:var(--ink-soft);margin-bottom:5px;}
         .field .kb-input{width:100%;}
         .field-row{display:flex;gap:10px;}
-        .field-row .field{flex:1;min-width:0;}
+        .field-row .field{flex:1;}
         .checkbox-list{display:flex;flex-direction:column;gap:6px;max-height:150px;overflow-y:auto;border:1px solid var(--paper-line);border-radius:8px;padding:10px;}
         .checkbox-list label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:400;color:var(--ink);}
         .balance-breakdown{background:#F8F5EB;border:1px solid var(--paper-line);border-radius:10px;padding:12px 14px;margin:12px 0 6px;display:flex;flex-direction:column;gap:6px;}
@@ -2361,6 +2514,23 @@ function App() {
         .balance-total{border-top:1px dashed var(--paper-line);padding-top:6px;margin-top:2px;font-weight:600;}
         .balance-total label{color:var(--ink);font-weight:600;}
         .loan-actions{display:flex;gap:8px;flex-wrap:wrap;}
+        .tab-balance-owed{color:var(--steel);}
+        .tab-balance-owe{color:var(--brick);}
+        .tab-balance-clear{color:var(--green);}
+        .tab-entry-list{list-style:none;margin:0 0 4px;padding:0;display:flex;flex-direction:column;gap:6px;}
+        .tab-entry-row{display:flex;align-items:center;gap:10px;font-size:13px;padding:8px 10px;border-radius:8px;background:#F8F5EB;}
+        .tab-entry-row-borrow{border-left:3px solid var(--steel);}
+        .tab-entry-row-payment{border-left:3px solid var(--green);}
+        .tab-entry-amount{font-weight:600;min-width:90px;}
+        .tab-entry-note{flex:1;color:var(--ink-soft);font-size:12px;}
+        .tab-entry-date{color:var(--ink-soft);font-size:11.5px;white-space:nowrap;}
+        .tab-entry-actions{display:flex;gap:4px;}
+        .tab-entry-type-toggle{display:flex;gap:8px;margin-bottom:8px;}
+        .tab-type-btn{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 0;border-radius:8px;border:1.5px solid var(--paper-line);background:#fff;font-size:12.5px;font-weight:600;color:var(--ink-soft);cursor:pointer;}
+        .tab-type-active-borrow{border-color:var(--steel);color:var(--steel);background:var(--steel-bg);}
+        .tab-type-active-payment{border-color:var(--green);color:var(--green);background:var(--green-bg);}
+        .add-tab-entry-row{margin-top:12px;padding-top:12px;border-top:1px dashed var(--paper-line);}
+        .add-tab-entry-fields{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
         .receipt-link{margin-left:auto;font-size:11.5px;}
         .settings-actions{display:flex;gap:10px;flex-wrap:wrap;}
         .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:10px;font-size:13px;box-shadow:0 10px 30px rgba(0,0,0,0.25);z-index:100;}
@@ -2414,7 +2584,6 @@ function App() {
         .logo-preview img{width:100%;height:100%;object-fit:cover;}
         .invoice-items-edit{display:flex;flex-direction:column;gap:8px;}
         .invoice-item-row{display:flex;gap:6px;align-items:center;}
-        .invoice-item-row input{min-width:0;}
         .invoice-doc-head{display:flex;align-items:center;gap:12px;margin-bottom:6px;}
         .invoice-logo{width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0;}
         .client-card{cursor:default;}
@@ -2435,18 +2604,6 @@ function App() {
           .home-topbar, .module-topbar{padding:16px 18px;}
           .carousel{padding:18px 44px;}
           .bottom-nav-item span{font-size:9.5px;}
-        }
-        @media (max-width:480px){
-          .stat-grid{grid-template-columns:1fr;}
-          .home-content, .module-content{padding:14px;}
-          .home-topbar, .module-topbar{padding:14px;}
-          .carousel{padding:16px 34px;}
-          .carousel-arrow-left{left:4px;}
-          .carousel-arrow-right{right:4px;}
-          .field-row{flex-direction:column;gap:0;}
-          .invoice-item-row{flex-wrap:wrap;}
-          .invoice-item-row input{flex:1 1 100px;}
-          .modal-card{max-width:100%;}
         }
       `}</style>
 
@@ -2502,6 +2659,7 @@ function App() {
             {activeTab === 'loansOverview' && renderLoansOverview()}
             {activeTab === 'loansGiven' && renderLoansGiven()}
             {activeTab === 'loansReceived' && renderLoansReceived()}
+            {activeTab === 'loansTabs' && renderLoansTabs()}
             {activeTab === 'paymentsOverview' && renderPaymentsOverview()}
             {activeTab === 'invoices' && renderInvoices()}
             {activeTab === 'clients' && renderClients()}
@@ -2580,6 +2738,9 @@ function App() {
 
       {modal === 'newMember' && (
         <Modal title="Add contributor" onClose={closeModal}>
+          <button type="button" className="btn btn-small btn-outline" style={{ marginBottom: 10 }} onClick={() => importDeviceContact((c) => { setField('name', c.name || form.name || ''); setField('phone', c.phone || form.phone || ''); })}>
+            <Phone size={13} /> Import from phone contacts
+          </button>
           <div className="field"><label>Full name</label>
             <input className="kb-input" value={form.name || ''} onChange={(e) => setField('name', e.target.value)} placeholder="e.g. Blessing Nwachukwu" />
           </div>
@@ -2667,8 +2828,74 @@ function App() {
           <button className="btn btn-primary" onClick={submitNewLoanReceived}>Save loan</button>
         </Modal>
       )}
+      {modal === 'newLoanTab' && (
+        <Modal title="Start a new running tab" onClose={closeModal}>
+          <div className="field-hint" style={{ marginBottom: 4 }}>Pick someone you've already registered, or add a new person — no need to say up front whether they're a borrower or lender, that's decided entry by entry.</div>
+          {loanContacts.length > 0 && (
+            <div className="tab-entry-type-toggle">
+              <button type="button" className={`tab-type-btn ${form.contactMode !== 'new' ? 'tab-type-active-borrow' : ''}`} onClick={() => setField('contactMode', 'existing')}>Existing person</button>
+              <button type="button" className={`tab-type-btn ${form.contactMode === 'new' ? 'tab-type-active-borrow' : ''}`} onClick={() => setField('contactMode', 'new')}>New person</button>
+            </div>
+          )}
+          {form.contactMode === 'new' || loanContacts.length === 0 ? (
+            <>
+              <button type="button" className="btn btn-small btn-outline" style={{ marginBottom: 4 }} onClick={() => importDeviceContact((c) => { setField('newContactName', c.name || form.newContactName || ''); setField('newContactPhone', c.phone || form.newContactPhone || ''); })}>
+                <Phone size={13} /> Import from phone contacts
+              </button>
+              <div className="field"><label>Full name</label>
+                <input className="kb-input" value={form.newContactName || ''} onChange={(e) => setField('newContactName', e.target.value)} placeholder="e.g. Chika Eze" />
+              </div>
+              <div className="field"><label>Phone number (optional)</label>
+                <input className="kb-input" value={form.newContactPhone || ''} onChange={(e) => setField('newContactPhone', e.target.value)} placeholder="080…" />
+              </div>
+            </>
+          ) : (
+            <div className="field"><label>Person</label>
+              <select className="kb-input" value={form.contactId || ''} onChange={(e) => setField('contactId', e.target.value)}>
+                <option value="">Choose someone…</option>
+                {loanContacts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          )}
+          <div className="field"><label>What's this tab for? (optional)</label>
+            <input className="kb-input" value={form.note || ''} onChange={(e) => setField('note', e.target.value)} placeholder="e.g. Shop credit, casual borrowing" />
+          </div>
+          <button className="btn btn-primary" onClick={submitNewLoanTab}>Create tab</button>
+        </Modal>
+      )}
+      {modal === 'editTabEntry' && (
+        <Modal title="Edit entry" onClose={closeModal}>
+          <div className="tab-entry-type-toggle">
+            <button type="button" className={`tab-type-btn ${form.type === 'borrow' ? 'tab-type-active-borrow' : ''}`} onClick={() => setField('type', 'borrow')}>
+              <ArrowDownRight size={13} /> Borrowed
+            </button>
+            <button type="button" className={`tab-type-btn ${form.type === 'payment' ? 'tab-type-active-payment' : ''}`} onClick={() => setField('type', 'payment')}>
+              <ArrowUpRight size={13} /> Paid back
+            </button>
+          </div>
+          <div className="field-row">
+            <div className="field"><label>Amount</label>
+              <input type="number" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} />
+            </div>
+            <div className="field"><label>Date</label>
+              <input type="date" className="kb-input" value={form.date || todayISO()} onChange={(e) => setField('date', e.target.value)} />
+            </div>
+          </div>
+          <div className="field"><label>Note (optional)</label>
+            <input className="kb-input" value={form.note || ''} onChange={(e) => setField('note', e.target.value)} placeholder="What was this for?" />
+          </div>
+          <button className="btn btn-primary" onClick={() => {
+            if (!form.amount || Number(form.amount) <= 0) { flash('Enter a valid amount.'); return; }
+            updateTabEntry(form.tabId, form.entryId, { type: form.type, amount: Number(form.amount), date: form.date || todayISO(), note: form.note || '' });
+            closeModal();
+          }}>Save changes</button>
+        </Modal>
+      )}
       {modal === 'newClient' && (
         <Modal title="Add client" onClose={closeModal}>
+          <button type="button" className="btn btn-small btn-outline" style={{ marginBottom: 10 }} onClick={() => importDeviceContact((c) => { setField('name', c.name || form.name || ''); setField('phone', c.phone || form.phone || ''); })}>
+            <Phone size={13} /> Import from phone contacts
+          </button>
           <div className="field"><label>Client / business name</label>
             <input className="kb-input" value={form.name || ''} onChange={(e) => setField('name', e.target.value)} placeholder="e.g. Bright Star Ventures" />
           </div>
@@ -2706,9 +2933,9 @@ function App() {
             <div className="invoice-items-edit">
               {(form.items || []).map((it) => (
                 <div key={it.id} className="invoice-item-row">
-                  <input className="kb-input" placeholder="Description" value={it.desc} onChange={(e) => updateInvoiceItem(it.id, 'desc', e.target.value)} style={{ flex: 2 }} />
-                  <input type="number" className="kb-input" placeholder="Qty" value={it.qty} onChange={(e) => updateInvoiceItem(it.id, 'qty', e.target.value)} style={{ width: 60 }} />
-                  <input type="number" className="kb-input" placeholder="Price" value={it.price} onChange={(e) => updateInvoiceItem(it.id, 'price', e.target.value)} style={{ width: 100 }} />
+                  <input className="kb-input" placeholder="Description" value={it.desc} onChange={(e) => updateInvoiceItem(it.id, 'desc', e.target.value)} style={{ flex: 3, minWidth: 0 }} />
+                  <input type="number" className="kb-input" placeholder="Qty" value={it.qty} onChange={(e) => updateInvoiceItem(it.id, 'qty', e.target.value)} style={{ width: 56, flexShrink: 0 }} />
+                  <input type="number" className="kb-input" placeholder="Price" value={it.price} onChange={(e) => updateInvoiceItem(it.id, 'price', e.target.value)} style={{ width: 90, flexShrink: 0 }} />
                   <button className="icon-btn" onClick={() => removeInvoiceItem(it.id)}><X size={15} /></button>
                 </div>
               ))}
