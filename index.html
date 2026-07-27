@@ -238,6 +238,30 @@ const THEME_PRESETS = [
   { id: 'teal', label: 'Teal', color: '#0F5C63' },
 ];
 
+/* ============================== persistence (localStorage) ============================== */
+const STORAGE_KEY = 'pocketledger:data:v1';
+const SESSION_KEY = 'pocketledger:session:v1';
+
+function loadStoredData() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    console.warn('PocketLedger: could not read saved data, starting fresh.', err);
+    return null;
+  }
+}
+function loadStoredSession() {
+  try {
+    const raw = window.localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    return null;
+  }
+}
+// Read once when the script loads, avoids re-parsing localStorage on every render.
+const PERSISTED = loadStoredData();
+
 /* ============================== small components ============================== */
 function Stamp({ status, label }) {
   return <span className={`stamp stamp-${status}`}>{label || STATUS_LABEL[status] || status}</span>;
@@ -662,7 +686,7 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
             <button type="button" className="auth-demo-fill" onClick={() => { set('email', 'demo@pocketledger.ng'); set('password', 'demo1234'); }}>Use demo login</button>
           </div>
         )}
-        <div className="auth-hint">Your data stays in this browser session \u2014 export a backup from Settings once you're in. You can change your login email and password anytime from Settings.</div>
+        <div className="auth-hint">Your data is saved to this device automatically \u2014 export a backup from Settings for safekeeping or to move to another device. You can change your login email and password anytime from Settings.</div>
       </div>
     </div>
   );
@@ -733,18 +757,18 @@ function HomeScreen({ user, settings, onPick, stats }) {
 
 /* ============================== app ============================== */
 function App() {
-  const [users, setUsers] = useState([{ id: 'u1', name: 'Amaka Obi', businessName: 'PocketLedger Ledger', email: 'demo@pocketledger.ng', password: 'demo1234' }]);
-  const [currentUser, setCurrentUser] = useState(null);
+  const [users, setUsers] = useState(() => (PERSISTED && PERSISTED.users) || [{ id: 'u1', name: 'Amaka Obi', businessName: 'PocketLedger Ledger', email: 'demo@pocketledger.ng', password: 'demo1234' }]);
+  const [currentUser, setCurrentUser] = useState(loadStoredSession);
   const [activeModule, setActiveModule] = useState('home');
 
-  const [members, setMembers] = useState(seedMembers);
-  const [plans, setPlans] = useState(seedPlans);
-  const [contributions, setContributions] = useState(() => seedContributions(seedPlans()));
-  const [loansGiven, setLoansGiven] = useState(seedLoansGiven);
-  const [loansReceived, setLoansReceived] = useState(seedLoansReceived);
-  const [clients, setClients] = useState(seedClients);
-  const [invoices, setInvoices] = useState(seedInvoices);
-  const [receipts, setReceipts] = useState(seedReceipts);
+  const [members, setMembers] = useState(() => (PERSISTED && PERSISTED.members) || seedMembers());
+  const [plans, setPlans] = useState(() => (PERSISTED && PERSISTED.plans) || seedPlans());
+  const [contributions, setContributions] = useState(() => (PERSISTED && PERSISTED.contributions) || seedContributions(seedPlans()));
+  const [loansGiven, setLoansGiven] = useState(() => (PERSISTED && PERSISTED.loansGiven) || seedLoansGiven());
+  const [loansReceived, setLoansReceived] = useState(() => (PERSISTED && PERSISTED.loansReceived) || seedLoansReceived());
+  const [clients, setClients] = useState(() => (PERSISTED && PERSISTED.clients) || seedClients());
+  const [invoices, setInvoices] = useState(() => (PERSISTED && PERSISTED.invoices) || seedInvoices());
+  const [receipts, setReceipts] = useState(() => (PERSISTED && PERSISTED.receipts) || seedReceipts());
   const [clientSearch, setClientSearch] = useState('');
   const [invoiceSearch, setInvoiceSearch] = useState('');
   const [receiptSearch, setReceiptSearch] = useState('');
@@ -759,7 +783,7 @@ function App() {
   const [memberSearch, setMemberSearch] = useState('');
   const [loanGivenSearch, setLoanGivenSearch] = useState('');
   const [loanReceivedSearch, setLoanReceivedSearch] = useState('');
-  const [settings, setSettings] = useState(seedSettings);
+  const [settings, setSettings] = useState(() => (PERSISTED && PERSISTED.settings) || seedSettings());
   const [newLoginEmail, setNewLoginEmail] = useState('');
   const [newLoginPassword, setNewLoginPassword] = useState('');
   const [receipt, setReceipt] = useState(null);
@@ -775,6 +799,29 @@ function App() {
     reader.readAsDataURL(file);
     e.target.value = '';
   };
+
+  // ---------- auto-save to localStorage (survives refresh & PWA updates) ----------
+  useEffect(() => {
+    const payload = {
+      savedAt: new Date().toISOString(),
+      users, members, plans, contributions, loansGiven, loansReceived,
+      clients, invoices, receipts, settings,
+    };
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    } catch (err) {
+      console.warn('PocketLedger: could not save data to this device.', err);
+    }
+  }, [users, members, plans, contributions, loansGiven, loansReceived, clients, invoices, receipts, settings]);
+
+  useEffect(() => {
+    try {
+      if (currentUser) window.localStorage.setItem(SESSION_KEY, JSON.stringify(currentUser));
+      else window.localStorage.removeItem(SESSION_KEY);
+    } catch (err) {
+      console.warn('PocketLedger: could not save session to this device.', err);
+    }
+  }, [currentUser]);
 
   const fmt = (n) => settings.currencySymbol + Math.round(Number(n || 0)).toLocaleString('en-NG');
   const flash = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
@@ -2005,7 +2052,7 @@ function App() {
 
       <div className="panel" style={{ marginTop: 16 }}>
         <div className="panel-title">Data & backups</div>
-        <div className="panel-sub" style={{ marginBottom: 12 }}>Everything lives in this session only. Export a backup regularly, and import it again next time you open the app.</div>
+        <div className="panel-sub" style={{ marginBottom: 12 }}>Everything is saved automatically to this device's storage, so it's still here after you refresh, close the app, or install an update. Export a backup regularly to move data to another device or keep an extra copy.</div>
         <div className="settings-actions">
           <button className="btn btn-primary" onClick={exportBackup}><Download size={15} /> Export full backup (JSON)</button>
           <button className="btn btn-secondary" onClick={triggerImport}><Upload size={15} /> Import backup</button>
@@ -2663,9 +2710,23 @@ root.render(<App />);
 
 <script>
 if ('serviceWorker' in navigator) {
+    let swRefreshing = false;
+    // When a new service worker takes control (after an update), reload once
+    // to pick up the new version. Your data lives in localStorage, not in the
+    // page, so this refresh never loses anything you've entered.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (swRefreshing) return;
+        swRefreshing = true;
+        window.location.reload();
+    });
+
     window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js', {
-            scope: './'
+        navigator.serviceWorker.register('./sw.js', { scope: './' }).then((reg) => {
+            // Check for a newer service worker right away, then periodically.
+            reg.update();
+            setInterval(() => reg.update(), 60 * 60 * 1000);
+        }).catch((err) => {
+            console.warn('PocketLedger: service worker registration failed.', err);
         });
     });
 }
