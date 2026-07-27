@@ -853,6 +853,67 @@ function App() {
   const closeModal = () => { setModal(null); setForm({}); };
   const setField = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
+  /* ---------- back button / swipe-back navigation ---------- */
+  const closeAllOverlays = () => { closeModal(); setInvoiceDoc(null); setReceipt(null); setPaymentReceiptDoc(null); };
+  const historyInitedRef = useRef(false);
+  const isRestoringRef = useRef(false);
+  const exitArmedRef = useRef(false);
+  const exitTimerRef = useRef(null);
+  const pageSnapshot = (mod, tab, planId) => ({ kb: true, module: mod, tab, planId: planId || null });
+
+  // Establish (once per login) a base "Home" history entry so the very first
+  // back-press, once the user has drilled anywhere, has something to land on.
+  useEffect(() => {
+    if (currentUser && !historyInitedRef.current) {
+      historyInitedRef.current = true;
+      window.history.replaceState(pageSnapshot('home', 'home', null), '');
+    }
+    if (!currentUser) historyInitedRef.current = false;
+  }, [currentUser]);
+
+  // Push a new history entry for every page-level move (module, tab, or
+  // drilled-into plan), so back/swipe-back can step through them one at a time.
+  useEffect(() => {
+    if (!currentUser || !historyInitedRef.current) return;
+    if (isRestoringRef.current) { isRestoringRef.current = false; return; }
+    window.history.pushState(pageSnapshot(activeModule, activeTab, selectedPlanId), '');
+  }, [activeModule, activeTab, selectedPlanId]);
+
+  // Handle the hardware/gesture back button and browser back navigation.
+  useEffect(() => {
+    const handlePopState = (e) => {
+      if (!currentUser) return;
+      const overlayOpen = !!(modal || invoiceDoc || receipt || paymentReceiptDoc);
+      if (overlayOpen) {
+        // First priority: back closes whatever's open, without also leaving the page.
+        closeAllOverlays();
+        window.history.pushState(pageSnapshot(activeModule, activeTab, selectedPlanId), '');
+        return;
+      }
+      const atHome = activeModule === 'home' && activeTab === 'home';
+      if (atHome) {
+        if (exitArmedRef.current) return; // second press in a row: let it actually exit
+        exitArmedRef.current = true;
+        flash('Press back again to exit.');
+        window.history.pushState(pageSnapshot('home', 'home', null), '');
+        clearTimeout(exitTimerRef.current);
+        exitTimerRef.current = setTimeout(() => { exitArmedRef.current = false; }, 2200);
+        return;
+      }
+      const s = e.state;
+      isRestoringRef.current = true;
+      if (s && s.kb) {
+        setActiveModule(s.module);
+        setActiveTab(s.tab);
+        setSelectedPlanId(s.planId || null);
+      } else {
+        setActiveModule('home'); setActiveTab('home'); setSelectedPlanId(null);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [currentUser, modal, invoiceDoc, receipt, paymentReceiptDoc, activeModule, activeTab, selectedPlanId]);
+
   /* ---------- lookups ---------- */
   const memberById = (id) => members.find((m) => m.id === id);
   const planById = (id) => plans.find((p) => p.id === id);
@@ -1712,7 +1773,7 @@ function App() {
                         </div>
                         {isOpen && (
                           <div className="loan-card-body">
-                            {l.note && <div className="loan-note">\u201c{l.note}\u201d</div>}
+                            {l.note && <div className="loan-note">“{l.note}”</div>}
                             <div className="balance-breakdown">
                               <div><label>Principal</label><span className="kb-mono">{fmt(l.principal)}</span></div>
                               {accrued > 0 && <div><label>Accrued interest</label><span className="kb-mono">{fmt(accrued)}</span></div>}
@@ -1991,7 +2052,7 @@ function App() {
               <input className="kb-input" value={settings.countryCode} onChange={(e) => setSettings((s) => ({ ...s, countryCode: e.target.value.replace(/\D/g, '') }))} placeholder="234" />
             </div>
           </div>
-          <div className="panel-sub">Used to normalise phone numbers (e.g. 0803… \u2192 {settings.countryCode}803…) when opening WhatsApp share links.</div>
+          <div className="panel-sub">Used to normalise phone numbers (e.g. 0803… → {settings.countryCode}803…) when opening WhatsApp share links.</div>
         </div>
 
         <div className="panel">
