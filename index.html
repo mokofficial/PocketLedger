@@ -307,14 +307,9 @@ function loadStoredData() {
     return null;
   }
 }
-function loadStoredSession() {
-  try {
-    const raw = window.localStorage.getItem(SESSION_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch (err) {
-    return null;
-  }
-}
+// Sessions are intentionally NOT restored across refresh/close — login is always
+// required. Clear out any session saved by an older version of the app.
+try { window.localStorage.removeItem(SESSION_KEY); } catch (err) {}
 // Read once when the script loads, avoids re-parsing localStorage on every render.
 const PERSISTED = loadStoredData();
 
@@ -811,21 +806,35 @@ function Carousel({ slides }) {
   );
 }
 
-function HomeScreen({ user, settings, onPick, stats }) {
-  const cards = [
-    { id: 'thrift', title: 'Thrift', desc: 'Run daily, weekly, monthly, rotating cycle or target savings circles and track every contribution.', icon: PiggyBank, tone: 'green', stat: `${stats.plans} active plan(s)` },
-    { id: 'loans', title: 'Loan Tracking', desc: 'Track money you’ve lent out and personal loans you’ve received, with reminders.', icon: HandCoins, tone: 'steel', stat: `${stats.loans} loan(s) on file` },
-    { id: 'payments', title: 'Payment Portal', desc: 'Invoice clients, issue receipts, and send payment reminders for your business.', icon: Wallet, tone: 'gold', stat: `${stats.invoices} invoice(s)` },
-  ];
+function WelcomeScreen({ settings, onStart }) {
   const slides = [
     { title: 'Thrift', icon: PiggyBank, tone: 'green', desc: 'Daily, weekly and monthly ajo, target savings, and rotating cycle thrift where one member is paid out each round until everyone has had a turn.' },
     { title: 'Loan Tracking', icon: HandCoins, tone: 'steel', desc: 'Keep tabs on money you’ve lent and personal loans you’ve taken, with interest, due dates and reminders handled for you.' },
     { title: 'Payment Portal', icon: Wallet, tone: 'gold', desc: 'Bill clients with branded invoices, collect payments, and issue proper receipts — all shareable straight to WhatsApp.' },
   ];
   return (
+    <div className="welcome-shell">
+      <div className="welcome-brand">
+        <div className="logo-mark">{settings.logoDataUrl ? <img src={settings.logoDataUrl} alt="logo" className="logo-mark-img" /> : <PiggyBank size={18} />}</div>
+        <div className="kb-title kb-display">{settings.businessName || 'PocketLedger'}</div>
+      </div>
+      <div className="welcome-carousel-wrap">
+        <Carousel slides={slides} />
+      </div>
+      <button className="btn btn-primary welcome-start" onClick={onStart}>Start <ArrowRight size={16} /></button>
+    </div>
+  );
+}
+
+function HomeScreen({ user, stats, onPick }) {
+  const cards = [
+    { id: 'thrift', title: 'Thrift', desc: 'Run daily, weekly, monthly, rotating cycle or target savings circles and track every contribution.', icon: PiggyBank, tone: 'green', stat: `${stats.plans} active plan(s)` },
+    { id: 'loans', title: 'Loan Tracking', desc: 'Track money you’ve lent out and personal loans you’ve received, with reminders.', icon: HandCoins, tone: 'steel', stat: `${stats.loans} loan(s) on file` },
+    { id: 'payments', title: 'Payment Portal', desc: 'Invoice clients, issue receipts, and send payment reminders for your business.', icon: Wallet, tone: 'gold', stat: `${stats.invoices} invoice(s)` },
+  ];
+  return (
     <>
       <SectionHeader eyebrow={`Welcome back${user?.name ? ', ' + user.name.split(' ')[0] : ''}`} title="What would you like to open?" />
-      <Carousel slides={slides} />
       <div className="home-card-grid">
         {cards.map((c) => (
           <div key={c.id} className={`home-card tone-${c.tone}`} onClick={() => onPick(c.id)}>
@@ -843,8 +852,8 @@ function HomeScreen({ user, settings, onPick, stats }) {
 /* ============================== app ============================== */
 function App() {
   const [users, setUsers] = useState(() => (PERSISTED && PERSISTED.users) || [{ id: 'u1', name: 'Amaka Obi', businessName: 'PocketLedger Ledger', email: 'demo@pocketledger.ng', password: 'demo1234' }]);
-  const [currentUser, setCurrentUser] = useState(loadStoredSession);
-  const [activeModule, setActiveModule] = useState('home');
+  const [currentUser, setCurrentUser] = useState(null);
+  const [activeModule, setActiveModule] = useState('welcome');
 
   const [members, setMembers] = useState(() => (PERSISTED && PERSISTED.members) || seedMembers());
   const [plans, setPlans] = useState(() => (PERSISTED && PERSISTED.plans) || seedPlans());
@@ -862,7 +871,7 @@ function App() {
   const [invoiceDoc, setInvoiceDoc] = useState(null);
   const [paymentReceiptDoc, setPaymentReceiptDoc] = useState(null);
 
-  const [activeTab, setActiveTab] = useState('home');
+  const [activeTab, setActiveTab] = useState('welcome');
   const [selectedPlanId, setSelectedPlanId] = useState('tp1');
   const [selectedMemberId, setSelectedMemberId] = useState('m1');
   const [expandedLoan, setExpandedLoan] = useState(null);
@@ -903,15 +912,6 @@ function App() {
     }
   }, [users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, clients, invoices, receipts, settings]);
 
-  useEffect(() => {
-    try {
-      if (currentUser) window.localStorage.setItem(SESSION_KEY, JSON.stringify(currentUser));
-      else window.localStorage.removeItem(SESSION_KEY);
-    } catch (err) {
-      console.warn('PocketLedger: could not save session to this device.', err);
-    }
-  }, [currentUser]);
-
   const fmt = (n) => settings.currencySymbol + Math.round(Number(n || 0)).toLocaleString('en-NG');
   const flash = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
   const digitsOnly = (s) => (s || '').replace(/\D/g, '');
@@ -936,6 +936,67 @@ function App() {
   const openModal = (type, initial = {}) => { setModal(type); setForm(initial); };
   const closeModal = () => { setModal(null); setForm({}); };
   const setField = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  /* ---------- back button / swipe-back navigation ---------- */
+  const closeAllOverlays = () => { closeModal(); setInvoiceDoc(null); setReceipt(null); setPaymentReceiptDoc(null); };
+  const historyInitedRef = useRef(false);
+  const isRestoringRef = useRef(false);
+  const exitArmedRef = useRef(false);
+  const exitTimerRef = useRef(null);
+  const pageSnapshot = (mod, tab, planId) => ({ kb: true, module: mod, tab, planId: planId || null });
+
+  // Establish (once per login) a base "Welcome" history entry so the very first
+  // back-press, once the user has drilled anywhere, has something to land on.
+  useEffect(() => {
+    if (currentUser && !historyInitedRef.current) {
+      historyInitedRef.current = true;
+      window.history.replaceState(pageSnapshot('welcome', 'welcome', null), '');
+    }
+    if (!currentUser) historyInitedRef.current = false;
+  }, [currentUser]);
+
+  // Push a new history entry for every page-level move (module, tab, or
+  // drilled-into plan), so back/swipe-back can step through them one at a time.
+  useEffect(() => {
+    if (!currentUser || !historyInitedRef.current) return;
+    if (isRestoringRef.current) { isRestoringRef.current = false; return; }
+    window.history.pushState(pageSnapshot(activeModule, activeTab, selectedPlanId), '');
+  }, [activeModule, activeTab, selectedPlanId]);
+
+  // Handle the hardware/gesture back button and browser back navigation.
+  useEffect(() => {
+    const handlePopState = (e) => {
+      if (!currentUser) return;
+      const overlayOpen = !!(modal || invoiceDoc || receipt || paymentReceiptDoc);
+      if (overlayOpen) {
+        // First priority: back closes whatever's open, without also leaving the page.
+        closeAllOverlays();
+        window.history.pushState(pageSnapshot(activeModule, activeTab, selectedPlanId), '');
+        return;
+      }
+      const atWelcome = activeModule === 'welcome';
+      if (atWelcome) {
+        if (exitArmedRef.current) return; // second press in a row: let it actually exit
+        exitArmedRef.current = true;
+        flash('Press back again to exit.');
+        window.history.pushState(pageSnapshot('welcome', 'welcome', null), '');
+        clearTimeout(exitTimerRef.current);
+        exitTimerRef.current = setTimeout(() => { exitArmedRef.current = false; }, 2200);
+        return;
+      }
+      const s = e.state;
+      isRestoringRef.current = true;
+      if (s && s.kb) {
+        setActiveModule(s.module);
+        setActiveTab(s.tab);
+        setSelectedPlanId(s.planId || null);
+      } else {
+        setActiveModule('welcome'); setActiveTab('welcome'); setSelectedPlanId(null);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [currentUser, modal, invoiceDoc, receipt, paymentReceiptDoc, activeModule, activeTab, selectedPlanId]);
 
   /* ---------- lookups ---------- */
   const memberById = (id) => members.find((m) => m.id === id);
@@ -1062,7 +1123,7 @@ function App() {
     closeModal();
   };
   const importDeviceContact = async (onFound) => {
-    if (!contactPickerSupported()) { flash('Contact access isn\u2019t supported on this browser/device — try Chrome on Android, or enter details manually.'); return; }
+    if (!contactPickerSupported()) { flash('Contact access isn’t supported on this browser/device — try Chrome on Android, or enter details manually.'); return; }
     const contact = await pickDeviceContact();
     if (!contact) { flash('No contact selected.'); return; }
     onFound(contact);
@@ -1096,15 +1157,15 @@ function App() {
     setLoansReceived((l) => [loan, ...l]);
     closeModal();
   };
-  const handleLogin = (user) => { setCurrentUser(user); setActiveModule('home'); setActiveTab('home'); flash(`Welcome back, ${user.name.split(' ')[0]}.`); };
+  const handleLogin = (user) => { setCurrentUser(user); setActiveModule('welcome'); setActiveTab('welcome'); flash(`Welcome back, ${user.name.split(' ')[0]}.`); };
   const handleSignup = (user) => {
     setUsers((u) => [...u, user]);
     setSettings((s) => ({ ...s, businessName: user.businessName, ownerName: user.name }));
     setCurrentUser(user);
-    setActiveModule('home'); setActiveTab('home');
+    setActiveModule('welcome'); setActiveTab('welcome');
     flash('Account created — welcome to PocketLedger!');
   };
-  const handleLogout = () => { setCurrentUser(null); setActiveModule('home'); setActiveTab('home'); };
+  const handleLogout = () => { setCurrentUser(null); setActiveModule('welcome'); setActiveTab('welcome'); };
   const updateLoginEmail = () => {
     if (!newLoginEmail || !newLoginEmail.includes('@')) { flash('Enter a valid email address.'); return; }
     if (users.some((u) => u.id !== currentUser.id && u.email.toLowerCase() === newLoginEmail.toLowerCase())) {
@@ -1999,7 +2060,6 @@ function App() {
   const renderHome = () => (
     <HomeScreen
       user={currentUser}
-      settings={settings}
       stats={{ plans: plans.length, loans: loansGiven.length + loansReceived.length + loanTabs.length, invoices: invoices.length }}
       onPick={openModule}
     />
@@ -2323,6 +2383,7 @@ function App() {
   };
   const openModule = (mod) => { setActiveModule(mod); setActiveTab(MODULE_NAV[mod][0].id); };
   const goHome = () => { setActiveModule('home'); setActiveTab('home'); };
+  const goStart = () => { setActiveModule('home'); setActiveTab('home'); };
   const MODULE_ALERT_GROUPS = {
     thrift: ['Thrift contributions'], loans: ['Loans given', 'Loans received'], payments: ['Payments'],
   };
@@ -2487,6 +2548,13 @@ function App() {
         .modal-head h3{margin:0;font-size:18px;}
         .icon-btn{background:none;border:none;cursor:pointer;color:var(--ink-soft);}
         .home-shell, .module-shell{height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden;}
+        .welcome-shell{height:100vh;height:100dvh;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:28px;padding:32px 24px;background:var(--paper);overflow:hidden;}
+        .welcome-brand{display:flex;align-items:center;gap:10px;}
+        .welcome-brand .logo-mark{width:38px;height:38px;background:var(--ink);color:var(--gold);}
+        .welcome-brand .kb-title{font-size:18px;font-weight:600;color:var(--ink);}
+        .welcome-carousel-wrap{width:100%;max-width:520px;}
+        .welcome-carousel-wrap .carousel{margin-bottom:0;}
+        .welcome-start{width:100%;max-width:320px;justify-content:center;padding:14px 0;font-size:15px;}
         .home-topbar, .module-topbar{display:flex;align-items:center;justify-content:space-between;padding:18px 28px;border-bottom:1px solid var(--paper-line);background:#fff;flex-shrink:0;}
         .home-topbar .logo{border-bottom:none;padding:0;margin-bottom:0;}
         .home-topbar .logo-mark{background:var(--ink);color:var(--gold);}
@@ -2609,7 +2677,9 @@ function App() {
         }
       `}</style>
 
-      {activeModule === 'home' ? (
+      {activeModule === 'welcome' ? (
+        <WelcomeScreen settings={settings} onStart={goStart} />
+      ) : activeModule === 'home' ? (
         <div className="home-shell">
           <header className="home-topbar">
             <div className="logo" onClick={goHome} style={{ cursor: 'pointer' }} title="Home">
