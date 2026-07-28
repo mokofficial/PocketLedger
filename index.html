@@ -317,6 +317,20 @@ const THEME_PRESETS = [
   { id: 'teal', label: 'Teal', color: '#0F5C63' },
 ];
 
+/* ============================== app configuration ============================== */
+// The demo account (below) is always view-only — no data it shows can be edited or saved.
+// This is the key someone must enter on the "Sign up" tab to create a real, writable
+// account. Change this string to whatever key you want to require.
+const SIGNUP_ACCESS_KEY = '12345678';
+const DEMO_EMAIL = 'demo@pocketledger.ng';
+// Shown on the "Contact developer" link on the sign-up screen — edit with your own details.
+const DEVELOPER_CONTACT = {
+  name: 'PocketLedger Support',
+  email: 'developer@pocketledger.ng',
+  phone: '+234 800 000 0000',
+  note: 'Reach out here for your account access key or any setup help.',
+};
+
 /* ============================== persistence (localStorage) ============================== */
 const STORAGE_KEY = 'pocketledger:data:v1';
 const SESSION_KEY = 'pocketledger:session:v1';
@@ -710,13 +724,23 @@ function AppLogo({ size = 18, invert = false }) {
 function AuthScreen({ users, onLogin, onSignup, flash }) {
   const [mode, setMode] = useState('login');
   const [showPw, setShowPw] = useState(false);
-  const [fields, setFields] = useState({ name: '', businessName: '', email: '', password: '' });
+  const [showContact, setShowContact] = useState(false);
+  const [fields, setFields] = useState({ name: '', businessName: '', email: '', password: '', accessKey: '' });
   const set = (k, v) => setFields((f) => ({ ...f, [k]: v }));
+  const demoAvailable = users.some((u) => u.isDemo);
 
   const submit = () => {
     if (mode === 'signup') {
       if (!fields.name || !fields.email || !fields.password) {
         flash('Please fill in your name, email and password to create your account.');
+        return;
+      }
+      if (!fields.accessKey) {
+        flash('Enter the access key to create a new account. Contact the developer if you don\u2019t have one.');
+        return;
+      }
+      if (fields.accessKey !== SIGNUP_ACCESS_KEY) {
+        flash('That access key isn\u2019t correct. Contact the developer for the right key.');
         return;
       }
       if (users.some((u) => u.email.toLowerCase() === fields.email.toLowerCase())) {
@@ -756,6 +780,17 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
         .auth-hint{text-align:center;font-size:11.5px;color:#8B8578;margin-top:18px;}
         .auth-demo-box{margin-top:16px;background:#EFEAE0;border-radius:9px;padding:10px 12px;font-size:12px;color:#5B6478;text-align:center;}
         .auth-demo-fill{display:block;margin:6px auto 0;background:none;border:none;color:#B78A2E;font-weight:600;font-size:12px;cursor:pointer;padding:0;}
+        .auth-field-hint{font-size:11px;color:#8B8578;margin-top:5px;line-height:1.4;}
+        .auth-contact-link{display:block;text-align:center;background:none;border:none;color:#2F4B7C;font-weight:600;font-size:12.5px;cursor:pointer;margin:14px auto 0;padding:0;}
+        .auth-contact-backdrop{position:fixed;inset:0;background:rgba(27,42,74,0.55);display:flex;align-items:center;justify-content:center;z-index:60;padding:20px;}
+        .auth-contact-card{width:100%;max-width:340px;background:#F7F3EA;border-radius:14px;padding:22px 22px 20px;box-shadow:0 20px 60px rgba(0,0,0,0.3);}
+        .auth-contact-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+        .auth-contact-head h3{margin:0;font-family:'Fraunces',serif;font-size:17px;color:#1B2A4A;}
+        .auth-contact-close{background:none;border:none;cursor:pointer;color:#5B6478;}
+        .auth-contact-note{font-size:12.5px;color:#5B6478;margin-bottom:14px;line-height:1.5;}
+        .auth-contact-row{display:flex;align-items:center;gap:9px;font-size:13px;color:#1B2A4A;padding:8px 0;border-top:1px solid #E7E0CC;}
+        .auth-contact-row:first-of-type{border-top:none;}
+        .auth-contact-row strong{font-weight:600;}
       `}</style>
       <div className="auth-card">
         <div className="auth-logo">
@@ -775,6 +810,10 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
             </div>
             <div className="auth-field"><label>Business name (optional)</label>
               <input className="auth-input" value={fields.businessName} onChange={(e) => set('businessName', e.target.value)} placeholder="Only needed for Payments/Thrift receipts" />
+            </div>
+            <div className="auth-field"><label>Access key</label>
+              <input className="auth-input" value={fields.accessKey} onChange={(e) => set('accessKey', e.target.value)} placeholder="Enter your access key" />
+              <div className="auth-field-hint">Required to create a new account. This clears the sample demo data and gives you a fresh, empty ledger.</div>
             </div>
           </>
         )}
@@ -797,14 +836,30 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
             <>New here? <button onClick={() => setMode('signup')}>Create an account</button></>
           )}
         </div>
-        {mode === 'login' && (
+        {mode === 'login' && demoAvailable && (
           <div className="auth-demo-box">
-            <div>Demo login: <strong>demo@pocketledger.ng</strong> / <strong>demo1234</strong></div>
-            <button type="button" className="auth-demo-fill" onClick={() => { set('email', 'demo@pocketledger.ng'); set('password', 'demo1234'); }}>Use demo login</button>
+            <div>Demo login (view only): <strong>{DEMO_EMAIL}</strong> / <strong>demo1234</strong></div>
+            <button type="button" className="auth-demo-fill" onClick={() => { set('email', DEMO_EMAIL); set('password', 'demo1234'); }}>Use demo login</button>
           </div>
+        )}
+        {mode === 'signup' && (
+          <button type="button" className="auth-contact-link" onClick={() => setShowContact(true)}>Need an access key? Contact developer</button>
         )}
         <div className="auth-hint">Your data is saved to this device automatically — export a backup from Settings for safekeeping or to move to another device. You can change your login email and password anytime from Settings.</div>
       </div>
+      {showContact && (
+        <div className="auth-contact-backdrop" onClick={() => setShowContact(false)}>
+          <div className="auth-contact-card" onClick={(e) => e.stopPropagation()}>
+            <div className="auth-contact-head">
+              <h3>Contact developer</h3>
+              <button className="auth-contact-close" onClick={() => setShowContact(false)}><X size={18} /></button>
+            </div>
+            <div className="auth-contact-note">{DEVELOPER_CONTACT.note}</div>
+            <div className="auth-contact-row"><Mail size={15} /> <strong>{DEVELOPER_CONTACT.email}</strong></div>
+            <div className="auth-contact-row"><Phone size={15} /> <strong>{DEVELOPER_CONTACT.phone}</strong></div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -850,6 +905,44 @@ function WelcomeScreen({ settings, onStart }) {
   ];
   return (
     <div className="welcome-shell">
+      {/* Self-contained styles: this screen renders before login, ahead of the main
+          app stylesheet, so it can't rely on any classes defined further down. */}
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+        .kb-display{font-family:'Fraunces',serif;}
+        .btn{display:inline-flex;align-items:center;gap:6px;border-radius:8px;padding:9px 15px;font-size:13.5px;font-weight:600;cursor:pointer;border:1px solid transparent;font-family:'IBM Plex Sans',sans-serif;}
+        .btn-primary{background:var(--ink);color:#fff;}
+        .btn-primary:hover{background:#28395e;}
+        .welcome-shell{
+          height:100vh; height:100dvh; width:100%; display:flex; flex-direction:column; align-items:center;
+          padding:32px 24px calc(28px + env(safe-area-inset-bottom)); overflow:hidden;
+          background:#1B2A4A; font-family:'IBM Plex Sans',sans-serif;
+          background-image:radial-gradient(circle at 15% 12%, rgba(183,138,46,0.22), transparent 45%), radial-gradient(circle at 85% 88%, rgba(31,122,92,0.22), transparent 45%);
+        }
+        .welcome-brand{display:flex;align-items:center;gap:10px;align-self:flex-start;}
+        .welcome-brand .logo-mark{width:38px;height:38px;display:flex;align-items:center;justify-content:center;}
+        .welcome-brand .logo-mark-img{width:100%;height:100%;object-fit:cover;border-radius:50%;}
+        .welcome-brand .kb-title{font-size:18px;font-weight:600;color:#F7F3EA;}
+        .welcome-carousel-wrap{flex:1;width:100%;max-width:520px;display:flex;align-items:flex-end;justify-content:center;}
+        .welcome-carousel-wrap .carousel{position:relative;display:flex;align-items:center;gap:14px;background:none;border:none;box-shadow:none;padding:0 30px 34px;margin-bottom:0;min-height:200px;}
+        .welcome-carousel-wrap .carousel-slide{display:flex;flex-direction:column;align-items:flex-start;gap:10px;flex:1;}
+        .welcome-carousel-wrap .carousel-icon{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:rgba(247,243,234,0.14);color:#F7F3EA;}
+        .welcome-carousel-wrap .carousel-body{text-align:left;}
+        .welcome-carousel-wrap .carousel-title{font-size:17px;font-weight:600;margin-bottom:4px;color:#F7F3EA;}
+        .welcome-carousel-wrap .carousel-desc{font-size:12.5px;line-height:1.5;max-width:520px;color:rgba(247,243,234,0.72);}
+        .welcome-carousel-wrap .carousel-dots{position:absolute;bottom:10px;left:0;right:0;display:flex;justify-content:center;gap:6px;}
+        .welcome-carousel-wrap .carousel-dot{width:6px;height:6px;border-radius:50%;border:none;cursor:pointer;padding:0;background:rgba(247,243,234,0.3);}
+        .welcome-carousel-wrap .carousel-dot-active{background:#F7F3EA;width:16px;border-radius:3px;}
+        .welcome-start{width:100%;max-width:320px;justify-content:center;padding:14px 0;font-size:15px;flex-shrink:0;background:var(--gold);color:#1B2A4A;}
+        .welcome-start:hover{background:#c99a37;}
+        .welcome-guide-link{
+          display:flex;align-items:center;justify-content:center;gap:6px;width:100%;max-width:320px;
+          margin-top:12px;background:none;border:none;color:rgba(247,243,234,0.82);font-size:12.5px;
+          font-weight:600;text-decoration:none;cursor:pointer;flex-shrink:0;
+        }
+        .welcome-guide-link:hover{color:#F7F3EA;}
+        @media (max-width:900px){ .carousel{padding:18px 44px;} }
+      `}</style>
       <div className="welcome-brand">
         <div className="logo-mark">{settings.logoDataUrl ? <img src={settings.logoDataUrl} alt="logo" className="logo-mark-img" /> : <AppLogo size={22} invert />}</div>
         <div className="kb-title kb-display">{settings.businessName || 'PocketLedger'}</div>
@@ -858,6 +951,9 @@ function WelcomeScreen({ settings, onStart }) {
         <Carousel slides={slides} />
       </div>
       <button className="btn btn-primary welcome-start" onClick={onStart}>Start <ArrowRight size={16} /></button>
+      <a className="welcome-guide-link" href="./PocketLedger-User-Guide.pdf" download="PocketLedger-User-Guide.pdf">
+        <Download size={14} /> Download user guide (PDF)
+      </a>
     </div>
   );
 }
@@ -888,23 +984,51 @@ function HomeScreen({ user, stats, onPick }) {
 
 /* ============================== app ============================== */
 function App() {
-  const [users, setUsers] = useState(() => (PERSISTED && PERSISTED.users) || [{ id: 'u1', name: 'Amaka Obi', businessName: 'PocketLedger Ledger', email: 'demo@pocketledger.ng', password: 'demo1234' }]);
+  const [users, setUsersRaw] = useState(() => (PERSISTED && PERSISTED.users) || [{ id: 'u1', name: 'Amaka Obi', businessName: 'PocketLedger Ledger', email: DEMO_EMAIL, password: 'demo1234', isDemo: true }]);
   const [currentUser, setCurrentUser] = useState(null);
   const [activeModule, setActiveModule] = useState('home');
   const [preAuthWelcomeSeen, setPreAuthWelcomeSeen] = useState(false);
 
-  const [members, setMembers] = useState(() => (PERSISTED && PERSISTED.members) || seedMembers());
-  const [plans, setPlans] = useState(() => (PERSISTED && PERSISTED.plans) || seedPlans());
-  const [contributions, setContributions] = useState(() => (PERSISTED && PERSISTED.contributions) || seedContributions(seedPlans()));
-  const [loansGiven, setLoansGiven] = useState(() => (PERSISTED && PERSISTED.loansGiven) || seedLoansGiven());
-  const [loansReceived, setLoansReceived] = useState(() => (PERSISTED && PERSISTED.loansReceived) || seedLoansReceived());
-  const [loanContacts, setLoanContacts] = useState(() => (PERSISTED && PERSISTED.loanContacts) || seedLoanContacts());
-  const [loanTabs, setLoanTabs] = useState(() => (PERSISTED && PERSISTED.loanTabs) || seedLoanTabs());
-  const [expenses, setExpenses] = useState(() => (PERSISTED && PERSISTED.expenses) || seedExpenses());
-  const [budgets, setBudgets] = useState(() => (PERSISTED && PERSISTED.budgets) || seedBudgets());
-  const [clients, setClients] = useState(() => (PERSISTED && PERSISTED.clients) || seedClients());
-  const [invoices, setInvoices] = useState(() => (PERSISTED && PERSISTED.invoices) || seedInvoices());
-  const [receipts, setReceipts] = useState(() => (PERSISTED && PERSISTED.receipts) || seedReceipts());
+  // The signed-in user is browsing the built-in, view-only demo account: every write
+  // path below is blocked (see guardWrite) so the sample data can never be changed.
+  const isReadOnly = currentUser?.isDemo === true;
+  const guardWrite = () => {
+    if (isReadOnly) {
+      flash('This is a demo account (view only). Sign up with an access key to create your own account and start saving real data.');
+      return true;
+    }
+    return false;
+  };
+
+  const [members, setMembersRaw] = useState(() => (PERSISTED && PERSISTED.members) || seedMembers());
+  const [plans, setPlansRaw] = useState(() => (PERSISTED && PERSISTED.plans) || seedPlans());
+  const [contributions, setContributionsRaw] = useState(() => (PERSISTED && PERSISTED.contributions) || seedContributions(seedPlans()));
+  const [loansGiven, setLoansGivenRaw] = useState(() => (PERSISTED && PERSISTED.loansGiven) || seedLoansGiven());
+  const [loansReceived, setLoansReceivedRaw] = useState(() => (PERSISTED && PERSISTED.loansReceived) || seedLoansReceived());
+  const [loanContacts, setLoanContactsRaw] = useState(() => (PERSISTED && PERSISTED.loanContacts) || seedLoanContacts());
+  const [loanTabs, setLoanTabsRaw] = useState(() => (PERSISTED && PERSISTED.loanTabs) || seedLoanTabs());
+  const [expenses, setExpensesRaw] = useState(() => (PERSISTED && PERSISTED.expenses) || seedExpenses());
+  const [budgets, setBudgetsRaw] = useState(() => (PERSISTED && PERSISTED.budgets) || seedBudgets());
+  const [clients, setClientsRaw] = useState(() => (PERSISTED && PERSISTED.clients) || seedClients());
+  const [invoices, setInvoicesRaw] = useState(() => (PERSISTED && PERSISTED.invoices) || seedInvoices());
+  const [receipts, setReceiptsRaw] = useState(() => (PERSISTED && PERSISTED.receipts) || seedReceipts());
+
+  // Guarded setters — every one of these is a no-op (with a flash message) while
+  // browsing the read-only demo account. All existing call sites below keep using
+  // these same names, so every write path is covered automatically.
+  const setUsers = (updater) => { if (guardWrite()) return; setUsersRaw(updater); };
+  const setMembers = (updater) => { if (guardWrite()) return; setMembersRaw(updater); };
+  const setPlans = (updater) => { if (guardWrite()) return; setPlansRaw(updater); };
+  const setContributions = (updater) => { if (guardWrite()) return; setContributionsRaw(updater); };
+  const setLoansGiven = (updater) => { if (guardWrite()) return; setLoansGivenRaw(updater); };
+  const setLoansReceived = (updater) => { if (guardWrite()) return; setLoansReceivedRaw(updater); };
+  const setLoanContacts = (updater) => { if (guardWrite()) return; setLoanContactsRaw(updater); };
+  const setLoanTabs = (updater) => { if (guardWrite()) return; setLoanTabsRaw(updater); };
+  const setExpenses = (updater) => { if (guardWrite()) return; setExpensesRaw(updater); };
+  const setBudgets = (updater) => { if (guardWrite()) return; setBudgetsRaw(updater); };
+  const setClients = (updater) => { if (guardWrite()) return; setClientsRaw(updater); };
+  const setInvoices = (updater) => { if (guardWrite()) return; setInvoicesRaw(updater); };
+  const setReceipts = (updater) => { if (guardWrite()) return; setReceiptsRaw(updater); };
   const [clientSearch, setClientSearch] = useState('');
   const [invoiceSearch, setInvoiceSearch] = useState('');
   const [receiptSearch, setReceiptSearch] = useState('');
@@ -922,7 +1046,8 @@ function App() {
   const [loanTabSearch, setLoanTabSearch] = useState('');
   const [expandedTab, setExpandedTab] = useState(null);
   const [expenseCategoryFilter, setExpenseCategoryFilter] = useState('All');
-  const [settings, setSettings] = useState(() => (PERSISTED && PERSISTED.settings) || seedSettings());
+  const [settings, setSettingsRaw] = useState(() => (PERSISTED && PERSISTED.settings) || seedSettings());
+  const setSettings = (updater) => { if (guardWrite()) return; setSettingsRaw(updater); };
   const [newLoginEmail, setNewLoginEmail] = useState('');
   const [newLoginPassword, setNewLoginPassword] = useState('');
   const [receipt, setReceipt] = useState(null);
@@ -931,6 +1056,7 @@ function App() {
   const logoInputRef = useRef(null);
   const triggerLogoUpload = () => logoInputRef.current && logoInputRef.current.click();
   const handleLogoFile = (e) => {
+    if (guardWrite()) return;
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
@@ -1053,6 +1179,7 @@ function App() {
   };
 
   const toggleContribution = (planId, memberId, period, amount) => {
+    if (guardWrite()) return;
     const existing = findContribution(planId, memberId, period);
     if (existing) {
       setContributions((prev) => prev.filter((c) => c.id !== existing.id));
@@ -1162,6 +1289,7 @@ function App() {
 
   /* ---------- submit handlers ---------- */
   const submitNewPlan = () => {
+    if (guardWrite()) return;
     if (!form.name || !form.amount) return;
     const category = form.category || 'Daily';
     if (category === 'Cycle' && (form.memberIds || []).length < 2) { flash('Pick at least 2 members for a rotating cycle plan.'); return; }
@@ -1183,6 +1311,7 @@ function App() {
     onFound(contact);
   };
   const submitNewMember = () => {
+    if (guardWrite()) return;
     if (!form.name) return;
     const member = { id: uid(), name: form.name, phone: form.phone || '' };
     setMembers((m) => [...m, member]);
@@ -1190,6 +1319,7 @@ function App() {
     closeModal();
   };
   const submitNewLoanGiven = () => {
+    if (guardWrite()) return;
     if (!form.borrower || !form.principal) return;
     const loan = {
       id: uid(), borrower: form.borrower, phone: form.phone || '', principal: Number(form.principal),
@@ -1201,6 +1331,7 @@ function App() {
     closeModal();
   };
   const submitNewLoanReceived = () => {
+    if (guardWrite()) return;
     if (!form.lender || !form.principal) return;
     const loan = {
       id: uid(), lender: form.lender, phone: form.phone || '', principal: Number(form.principal),
@@ -1213,14 +1344,20 @@ function App() {
   };
   const handleLogin = (user) => { setCurrentUser(user); setActiveModule('home'); setActiveTab('home'); flash(`Welcome back, ${user.name.split(' ')[0]}.`); };
   const handleSignup = (user) => {
-    setUsers((u) => [...u, user]);
-    setSettings((s) => ({ ...s, businessName: user.businessName, ownerName: user.name }));
+    // Creating a real account replaces the demo account entirely and wipes every
+    // piece of sample/demo data, so the new account starts with a clean, empty ledger.
+    setUsersRaw([user]);
+    setMembersRaw([]); setPlansRaw([]); setContributionsRaw([]);
+    setLoansGivenRaw([]); setLoansReceivedRaw([]); setLoanContactsRaw([]); setLoanTabsRaw([]);
+    setExpensesRaw([]); setBudgetsRaw([]); setClientsRaw([]); setInvoicesRaw([]); setReceiptsRaw([]);
+    setSettingsRaw((s) => ({ ...s, businessName: user.businessName, ownerName: user.name }));
     setCurrentUser(user);
     setActiveModule('home'); setActiveTab('home');
-    flash('Account created — welcome to PocketLedger!');
+    flash('Account created — your workspace has been reset with fresh, empty data.');
   };
   const handleLogout = () => { setCurrentUser(null); setActiveModule('home'); setActiveTab('home'); };
   const updateLoginEmail = () => {
+    if (guardWrite()) return;
     if (!newLoginEmail || !newLoginEmail.includes('@')) { flash('Enter a valid email address.'); return; }
     if (users.some((u) => u.id !== currentUser.id && u.email.toLowerCase() === newLoginEmail.toLowerCase())) {
       flash('Another account already uses that email.'); return;
@@ -1231,6 +1368,7 @@ function App() {
     flash('Login email updated.');
   };
   const updateLoginPassword = () => {
+    if (guardWrite()) return;
     if (!newLoginPassword || newLoginPassword.length < 4) { flash('Password must be at least 4 characters.'); return; }
     setUsers((prev) => prev.map((u) => u.id === currentUser.id ? { ...u, password: newLoginPassword } : u));
     setCurrentUser((u) => ({ ...u, password: newLoginPassword }));
@@ -1239,6 +1377,7 @@ function App() {
   };
 
   const submitNewClient = () => {
+    if (guardWrite()) return;
     if (!form.name) return;
     const client = { id: uid(), name: form.name, phone: form.phone || '', email: form.email || '', address: form.address || '' };
     setClients((c) => [...c, client]);
@@ -1254,6 +1393,7 @@ function App() {
   const updateInvoiceItem = (itemId, key, value) => setForm((f) => ({ ...f, items: (f.items || []).map((it) => it.id === itemId ? { ...it, [key]: value } : it) }));
   const removeInvoiceItem = (itemId) => setForm((f) => ({ ...f, items: (f.items || []).filter((it) => it.id !== itemId) }));
   const submitNewInvoice = () => {
+    if (guardWrite()) return;
     if (!form.clientId || !(form.items || []).length) { flash('Pick a client and add at least one item.'); return; }
     const invoice = {
       id: uid(), number: form.number || nextInvoiceNumber(), clientId: form.clientId,
@@ -1271,6 +1411,7 @@ function App() {
     return `RCT-${next}`;
   };
   const markInvoicePaid = (invoiceId) => {
+    if (guardWrite()) return;
     const invoice = invoices.find((i) => i.id === invoiceId);
     setInvoices((prev) => prev.map((i) => i.id === invoiceId ? { ...i, status: 'paid', paidDate: todayISO() } : i));
     if (invoice) {
@@ -1283,6 +1424,7 @@ function App() {
     flash('Invoice marked as paid — receipt generated.');
   };
   const submitManualReceipt = () => {
+    if (guardWrite()) return;
     if (!form.clientId && !form.clientName) { flash('Pick a client or type a payer name.'); return; }
     if (!form.amount) { flash('Enter an amount received.'); return; }
     const rcpt = {
@@ -1296,15 +1438,18 @@ function App() {
     setPaymentReceiptDoc(rcpt);
   };
   const deleteReceipt = (receiptId) => {
+    if (guardWrite()) return;
     if (!window.confirm('Delete this receipt? This cannot be undone.')) return;
     setReceipts((prev) => prev.filter((r) => r.id !== receiptId));
   };
   const deleteInvoice = (invoiceId) => {
+    if (guardWrite()) return;
     if (!window.confirm('Delete this invoice? This cannot be undone.')) return;
     setInvoices((prev) => prev.filter((i) => i.id !== invoiceId));
   };
 
   const recordCyclePayout = (planId) => {
+    if (guardWrite()) return;
     const plan = plans.find((p) => p.id === planId);
     if (!plan || cycleComplete(plan)) return;
     const pending = cyclePendingContributors(plan);
@@ -1321,6 +1466,7 @@ function App() {
     setReceipt({ kind: 'cyclePayout', plan: { ...plan, payouts: [...(plan.payouts || []), payout] }, payout });
   };
   const restartCycle = (planId) => {
+    if (guardWrite()) return;
     const plan = plans.find((p) => p.id === planId);
     if (!plan || !cycleComplete(plan)) return;
     setPlans((prev) => prev.map((p) => p.id === planId ? {
@@ -1332,26 +1478,31 @@ function App() {
     flash(`${plan.name} — new cycle started. Round 1 of ${plan.memberIds.length} begins today.`);
   };
   const addMemberToPlan = (planId, memberId) => {
+    if (guardWrite()) return;
     if (!memberId) return;
     setPlans((prev) => prev.map((p) => p.id === planId && !p.memberIds.includes(memberId) ? { ...p, memberIds: [...p.memberIds, memberId] } : p));
   };
   const addRepayment = (loanId, amount, date) => {
+    if (guardWrite()) return;
     setLoansGiven((prev) => prev.map((l) => l.id === loanId ? { ...l, repayments: [...l.repayments, { id: uid(), amount, date }] } : l));
     flash('Payment recorded.');
   };
   const addRefund = (loanId, amount, date) => {
+    if (guardWrite()) return;
     setLoansReceived((prev) => prev.map((l) => l.id === loanId ? { ...l, refunds: [...l.refunds, { id: uid(), amount, date }] } : l));
     flash('Refund recorded.');
   };
 
   /* ---------- running-tab loans ---------- */
   const submitNewLoanContact = () => {
+    if (guardWrite()) return null;
     if (!form.name) return null;
     const contact = { id: uid(), name: form.name, phone: form.phone || '' };
     setLoanContacts((c) => [...c, contact]);
     return contact;
   };
   const submitNewLoanTab = () => {
+    if (guardWrite()) return;
     let contactId = form.contactId;
     if (form.contactMode === 'new') {
       if (!form.newContactName) { flash('Enter a name for this person.'); return; }
@@ -1366,24 +1517,29 @@ function App() {
     flash('Tab created — add entries as borrowing or payments happen.');
   };
   const addTabEntry = (tabId, entry) => {
+    if (guardWrite()) return;
     setLoanTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, entries: [...t.entries, { id: uid(), ...entry }] } : t));
     flash(entry.type === 'borrow' ? 'Borrowing added to the tab.' : 'Payment added to the tab.');
   };
   const updateTabEntry = (tabId, entryId, changes) => {
+    if (guardWrite()) return;
     setLoanTabs((prev) => prev.map((t) => t.id === tabId
       ? { ...t, entries: t.entries.map((e) => e.id === entryId ? { ...e, ...changes } : e) }
       : t));
   };
   const deleteTabEntry = (tabId, entryId) => {
+    if (guardWrite()) return;
     if (!window.confirm('Delete this entry? This cannot be undone.')) return;
     setLoanTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, entries: t.entries.filter((e) => e.id !== entryId) } : t));
   };
   const deleteLoanTab = (tabId) => {
+    if (guardWrite()) return;
     if (!window.confirm('Delete this whole tab and its entries? This cannot be undone.')) return;
     setLoanTabs((prev) => prev.filter((t) => t.id !== tabId));
   };
   const loanContactById = (id) => loanContacts.find((c) => c.id === id);
   const submitEditLoanTab = () => {
+    if (guardWrite()) return;
     if (!form.contactName) { flash('Enter a name for this person.'); return; }
     setLoanContacts((prev) => prev.map((c) => c.id === form.contactId ? { ...c, name: form.contactName, phone: form.contactPhone || '' } : c));
     setLoanTabs((prev) => prev.map((t) => t.id === form.tabId ? { ...t, note: form.note || '' } : t));
@@ -1393,6 +1549,7 @@ function App() {
 
   /* ---------- spending tracker ---------- */
   const submitNewExpense = () => {
+    if (guardWrite()) return;
     if (!form.amount || !form.category) { flash('Pick a category and enter an amount.'); return; }
     const expense = { id: uid(), category: form.category, amount: Number(form.amount), date: form.date || todayISO(), note: form.note || '' };
     setExpenses((prev) => [expense, ...prev]);
@@ -1400,17 +1557,20 @@ function App() {
     flash('Expense logged.');
   };
   const submitEditExpense = () => {
+    if (guardWrite()) return;
     if (!form.amount || !form.category) { flash('Pick a category and enter an amount.'); return; }
     setExpenses((prev) => prev.map((e) => e.id === form.id ? { ...e, category: form.category, amount: Number(form.amount), date: form.date, note: form.note || '' } : e));
     closeModal();
     flash('Expense updated.');
   };
   const deleteExpense = (expenseId) => {
+    if (guardWrite()) return;
     if (!window.confirm('Delete this expense? This cannot be undone.')) return;
     setExpenses((prev) => prev.filter((e) => e.id !== expenseId));
   };
   const budgetForCategory = (category) => budgets.find((b) => b.category === category);
   const submitBudget = () => {
+    if (guardWrite()) return;
     if (!form.category || !form.monthlyLimit) { flash('Pick a category and enter a monthly limit.'); return; }
     setBudgets((prev) => {
       const existing = prev.find((b) => b.category === form.category);
@@ -1421,12 +1581,14 @@ function App() {
     flash('Budget saved.');
   };
   const deleteBudget = (budgetId) => {
+    if (guardWrite()) return;
     if (!window.confirm('Remove this budget? This cannot be undone.')) return;
     setBudgets((prev) => prev.filter((b) => b.id !== budgetId));
   };
 
   /* ---------- thrift member loans (from a plan's pool) ---------- */
   const submitPlanMemberLoan = () => {
+    if (guardWrite()) return;
     if (!form.memberId || !form.amount) { flash('Pick a member and enter an amount.'); return; }
     const member = memberById(form.memberId);
     const amount = Number(form.amount);
@@ -1449,11 +1611,13 @@ function App() {
     closeModal();
   };
   const togglePlanMemberLoanRepaid = (planId, loanId) => {
+    if (guardWrite()) return;
     setPlans((prev) => prev.map((p) => p.id === planId
       ? { ...p, memberLoans: (p.memberLoans || []).map((ml) => ml.id === loanId ? { ...ml, repaid: !ml.repaid } : ml) }
       : p));
   };
   const deletePlanMemberLoan = (planId, loanId) => {
+    if (guardWrite()) return;
     if (!window.confirm('Delete this loan record? This cannot be undone.')) return;
     setPlans((prev) => prev.map((p) => p.id === planId ? { ...p, memberLoans: (p.memberLoans || []).filter((ml) => ml.id !== loanId) } : p));
   };
@@ -1488,6 +1652,7 @@ function App() {
   };
   const triggerImport = () => importInputRef.current && importInputRef.current.click();
   const handleImportFile = (e) => {
+    if (guardWrite()) return;
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
@@ -1517,6 +1682,7 @@ function App() {
     e.target.value = '';
   };
   const resetSampleData = () => {
+    if (guardWrite()) return;
     if (!window.confirm('This replaces everything with the original sample data. Continue?')) return;
     const p = seedPlans();
     setMembers(seedMembers());
@@ -1534,6 +1700,7 @@ function App() {
     flash('Sample data restored.');
   };
   const clearAllData = () => {
+    if (guardWrite()) return;
     if (!window.confirm('This deletes every plan, contributor, loan, client, invoice and receipt. This cannot be undone. Continue?')) return;
     setMembers([]); setPlans([]); setContributions([]); setLoansGiven([]); setLoansReceived([]); setLoanContacts([]); setLoanTabs([]); setExpenses([]); setBudgets([]); setClients([]); setInvoices([]); setReceipts([]);
     flash('All data cleared.');
