@@ -670,6 +670,20 @@ function PaymentReceiptModal({ receiptDoc, client, invoice, settings, fmt, onClo
   );
 }
 
+function AppLogo({ size = 18, invert = false }) {
+  const bg = invert ? 'var(--paper)' : 'var(--ink)';
+  const bar = invert ? 'var(--ink)' : 'var(--paper)';
+  return (
+    <svg width={size} height={size} viewBox="0 0 211.56 211.56" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
+      <rect x="0" y="0" width="211.56" height="211.56" rx="40.86" fill={bg} />
+      <rect x="70.62" y="73.63" width="70.32" height="10.64" rx="3" fill={bar} />
+      <rect x="55.52" y="91.52" width="100.52" height="10.64" rx="3" fill={bar} />
+      <rect x="70.62" y="109.4" width="45.06" height="10.64" rx="3" fill={bar} />
+      <rect x="70.62" y="127.29" width="30.06" height="10.64" rx="3" fill={bar} />
+    </svg>
+  );
+}
+
 function AuthScreen({ users, onLogin, onSignup, flash }) {
   const [mode, setMode] = useState('login');
   const [showPw, setShowPw] = useState(false);
@@ -701,7 +715,7 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
         .auth-wrap{min-height:100vh;width:100%;display:flex;justify-content:center;overflow-y:auto;background:#1B2A4A;background-image:radial-gradient(circle at 20% 20%, rgba(183,138,46,0.18), transparent 45%), radial-gradient(circle at 80% 80%, rgba(31,122,92,0.18), transparent 45%);font-family:'IBM Plex Sans',sans-serif;padding:20px;}
         .auth-card{width:100%;max-width:400px;margin:auto;background:#F7F3EA;border-radius:16px;padding:36px 32px;box-shadow:0 24px 70px rgba(0,0,0,0.35);}
         .auth-logo{display:flex;align-items:center;gap:10px;margin-bottom:6px;}
-        .auth-logo-mark{width:38px;height:38px;border-radius:50%;background:#B78A2E;display:flex;align-items:center;justify-content:center;color:#1B2A4A;}
+        .auth-logo-mark{width:38px;height:38px;display:flex;align-items:center;justify-content:center;}
         .auth-title{font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:#1B2A4A;}
         .auth-sub{font-size:13px;color:#5B6478;margin-bottom:22px;}
         .auth-tabs{display:flex;background:#EFEAE0;border-radius:10px;padding:4px;margin-bottom:22px;}
@@ -722,7 +736,7 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
       `}</style>
       <div className="auth-card">
         <div className="auth-logo">
-          <div className="auth-logo-mark"><PiggyBank size={19} /></div>
+          <div className="auth-logo-mark"><AppLogo size={38} /></div>
           <div className="auth-title">PocketLedger</div>
         </div>
         <div className="auth-sub">Thrift, loans and business payments — all in one ledger.</div>
@@ -815,7 +829,7 @@ function WelcomeScreen({ settings, onStart }) {
   return (
     <div className="welcome-shell">
       <div className="welcome-brand">
-        <div className="logo-mark">{settings.logoDataUrl ? <img src={settings.logoDataUrl} alt="logo" className="logo-mark-img" /> : <PiggyBank size={18} />}</div>
+        <div className="logo-mark">{settings.logoDataUrl ? <img src={settings.logoDataUrl} alt="logo" className="logo-mark-img" /> : <AppLogo size={22} invert />}</div>
         <div className="kb-title kb-display">{settings.businessName || 'PocketLedger'}</div>
       </div>
       <div className="welcome-carousel-wrap">
@@ -2411,7 +2425,7 @@ function App() {
         .kb-display{font-family:'Fraunces',serif;}
         .kb-mono{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;}
         .logo{display:flex;align-items:center;gap:10px;padding:0 20px 22px;border-bottom:1px solid rgba(237,232,218,0.15);margin-bottom:10px;}
-        .logo-mark{width:34px;height:34px;border-radius:50%;background:var(--gold);display:flex;align-items:center;justify-content:center;color:var(--ink);}
+        .logo-mark{width:34px;height:34px;display:flex;align-items:center;justify-content:center;}
         .logo-text .kb-title{font-size:17px;font-weight:600;line-height:1.1;}
         .logo-text .kb-tag{font-size:10.5px;color:#B9C0D4;letter-spacing:.04em;}
         .bell-dot{position:absolute;top:-4px;right:-4px;background:var(--brick);color:#fff;font-size:10px;font-weight:700;border-radius:9px;min-width:16px;height:16px;display:flex;align-items:center;justify-content:center;padding:0 4px;}
@@ -2548,16 +2562,30 @@ function App() {
         .modal-head h3{margin:0;font-size:18px;}
         .icon-btn{background:none;border:none;cursor:pointer;color:var(--ink-soft);}
         .home-shell, .module-shell{height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden;}
-        .welcome-shell{height:100vh;height:100dvh;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:28px;padding:32px 24px;background:var(--paper);overflow:hidden;}
-        .welcome-brand{display:flex;align-items:center;gap:10px;}
-        .welcome-brand .logo-mark{width:38px;height:38px;background:var(--ink);color:var(--gold);}
-        .welcome-brand .kb-title{font-size:18px;font-weight:600;color:var(--ink);}
-        .welcome-carousel-wrap{width:100%;max-width:520px;}
-        .welcome-carousel-wrap .carousel{margin-bottom:0;}
-        .welcome-start{width:100%;max-width:320px;justify-content:center;padding:14px 0;font-size:15px;}
+        .welcome-shell{
+          height:100vh; height:100dvh; width:100%; display:flex; flex-direction:column; align-items:center;
+          padding:32px 24px calc(28px + env(safe-area-inset-bottom)); overflow:hidden;
+          background:#1B2A4A;
+          background-image:radial-gradient(circle at 15% 12%, rgba(183,138,46,0.22), transparent 45%), radial-gradient(circle at 85% 88%, rgba(31,122,92,0.22), transparent 45%);
+        }
+        .welcome-brand{display:flex;align-items:center;gap:10px;align-self:flex-start;}
+        .welcome-brand .logo-mark{width:38px;height:38px;}
+        .welcome-brand .kb-title{font-size:18px;font-weight:600;color:#F7F3EA;}
+        .welcome-carousel-wrap{flex:1;width:100%;max-width:520px;display:flex;align-items:center;justify-content:center;}
+        .welcome-carousel-wrap .carousel{background:none;border:none;box-shadow:none;padding:0 30px 30px;margin-bottom:0;min-height:140px;}
+        .welcome-carousel-wrap .carousel.tone-green,
+        .welcome-carousel-wrap .carousel.tone-steel,
+        .welcome-carousel-wrap .carousel.tone-gold{background:none;}
+        .welcome-carousel-wrap .carousel-icon{background:rgba(247,243,234,0.14);color:#F7F3EA;}
+        .welcome-carousel-wrap .carousel-title{color:#F7F3EA;}
+        .welcome-carousel-wrap .carousel-desc{color:rgba(247,243,234,0.72);}
+        .welcome-carousel-wrap .carousel-arrow{background:rgba(247,243,234,0.1);border-color:rgba(247,243,234,0.25);color:#F7F3EA;}
+        .welcome-carousel-wrap .carousel-dot{background:rgba(247,243,234,0.3);}
+        .welcome-carousel-wrap .carousel-dot-active{background:#F7F3EA;}
+        .welcome-start{width:100%;max-width:320px;justify-content:center;padding:14px 0;font-size:15px;flex-shrink:0;background:var(--gold);color:#1B2A4A;}
+        .welcome-start:hover{background:#c99a37;}
         .home-topbar, .module-topbar{display:flex;align-items:center;justify-content:space-between;padding:18px 28px;border-bottom:1px solid var(--paper-line);background:#fff;flex-shrink:0;}
         .home-topbar .logo{border-bottom:none;padding:0;margin-bottom:0;}
-        .home-topbar .logo-mark{background:var(--ink);color:var(--gold);}
         .home-topbar .logo-text .kb-title{color:var(--ink);}
         .home-topbar .logo-text .kb-tag{color:var(--ink-soft);}
         .home-topbar-actions, .module-topbar-actions{display:flex;align-items:center;gap:10px;}
@@ -2683,7 +2711,7 @@ function App() {
         <div className="home-shell">
           <header className="home-topbar">
             <div className="logo" onClick={goHome} style={{ cursor: 'pointer' }} title="Home">
-              <div className="logo-mark">{settings.logoDataUrl ? <img src={settings.logoDataUrl} alt="logo" className="logo-mark-img" /> : <PiggyBank size={18} />}</div>
+              <div className="logo-mark">{settings.logoDataUrl ? <img src={settings.logoDataUrl} alt="logo" className="logo-mark-img" /> : <AppLogo size={18} />}</div>
               <div className="logo-text">
                 <div className="kb-title kb-display">{settings.businessName || 'PocketLedger'}</div>
                 <div className="kb-tag">Thrift, loans &amp; payments</div>
