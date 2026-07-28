@@ -809,7 +809,6 @@ function Carousel({ slides }) {
   const s = slides[index];
   return (
     <div className={`carousel tone-${s.tone}`}>
-      <button className="carousel-arrow carousel-arrow-left" onClick={() => go(index - 1)}><ChevronRight size={16} style={{ transform: 'rotate(180deg)' }} /></button>
       <div className="carousel-slide">
         <div className="carousel-icon"><s.icon size={26} /></div>
         <div className="carousel-body">
@@ -817,7 +816,6 @@ function Carousel({ slides }) {
           <div className="carousel-desc">{s.desc}</div>
         </div>
       </div>
-      <button className="carousel-arrow carousel-arrow-right" onClick={() => go(index + 1)}><ChevronRight size={16} /></button>
       <div className="carousel-dots">
         {slides.map((_, i) => <button key={i} className={`carousel-dot ${i === index ? 'carousel-dot-active' : ''}`} onClick={() => go(i)} />)}
       </div>
@@ -2579,7 +2577,6 @@ function App() {
         .welcome-carousel-wrap .carousel-icon{background:rgba(247,243,234,0.14);color:#F7F3EA;}
         .welcome-carousel-wrap .carousel-title{color:#F7F3EA;}
         .welcome-carousel-wrap .carousel-desc{color:rgba(247,243,234,0.72);}
-        .welcome-carousel-wrap .carousel-arrow{background:rgba(247,243,234,0.1);border-color:rgba(247,243,234,0.25);color:#F7F3EA;}
         .welcome-carousel-wrap .carousel-dot{background:rgba(247,243,234,0.3);}
         .welcome-carousel-wrap .carousel-dot-active{background:#F7F3EA;}
         .welcome-start{width:100%;max-width:320px;justify-content:center;padding:14px 0;font-size:15px;flex-shrink:0;background:var(--gold);color:#1B2A4A;}
@@ -2658,9 +2655,6 @@ function App() {
         .carousel-body{text-align:right;}
         .carousel-title{font-size:17px;font-weight:600;margin-bottom:4px;}
         .carousel-desc{font-size:12.5px;color:var(--ink-soft);line-height:1.5;max-width:520px;}
-        .carousel-arrow{position:absolute;top:50%;transform:translateY(-50%);width:30px;height:30px;border-radius:50%;border:1px solid var(--paper-line);background:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--ink);}
-        .carousel-arrow-left{left:12px;}
-        .carousel-arrow-right{right:12px;}
         .carousel-dots{position:absolute;bottom:10px;left:0;right:0;display:flex;justify-content:center;gap:6px;}
         .carousel-dot{width:6px;height:6px;border-radius:50%;background:var(--paper-line);border:none;cursor:pointer;padding:0;}
         .carousel-dot-active{background:var(--ink);width:16px;border-radius:3px;}
