@@ -249,6 +249,17 @@ function seedLoanTabs() {
   ];
 }
 
+const EXPENSE_CATEGORIES = ['Food', 'Transport', 'Rent', 'Utilities', 'Health', 'Business', 'Airtime/Data', 'Other'];
+function seedExpenses() {
+  return [
+    { id: 'ex1', category: 'Food', amount: 4500, date: '2026-07-20', note: 'Market run' },
+    { id: 'ex2', category: 'Transport', amount: 1200, date: '2026-07-21', note: 'Okada fare' },
+    { id: 'ex3', category: 'Business', amount: 15000, date: '2026-07-15', note: 'Restock inventory' },
+    { id: 'ex4', category: 'Airtime/Data', amount: 2000, date: '2026-07-22', note: '' },
+    { id: 'ex5', category: 'Utilities', amount: 8000, date: '2026-07-05', note: 'Electricity token' },
+  ];
+}
+
 function seedSettings() {
   return {
     businessName: 'PocketLedger Ledger', ownerName: '', ownerPhone: '', countryCode: '234', currencySymbol: '₦',
@@ -828,6 +839,7 @@ function WelcomeScreen({ settings, onStart }) {
     { title: 'Thrift', icon: PiggyBank, tone: 'green', desc: 'Daily, weekly and monthly ajo, target savings, and rotating cycle thrift where one member is paid out each round until everyone has had a turn.' },
     { title: 'Loan Tracking', icon: HandCoins, tone: 'steel', desc: 'Keep tabs on money you’ve lent and personal loans you’ve taken, with interest, due dates and reminders handled for you.' },
     { title: 'Payment Portal', icon: Wallet, tone: 'gold', desc: 'Bill clients with branded invoices, collect payments, and issue proper receipts — all shareable straight to WhatsApp.' },
+    { title: 'Spending Tracker', icon: CreditCard, tone: 'brick', desc: 'Log every expense by category so you always know where your money went.' },
   ];
   return (
     <div className="welcome-shell">
@@ -848,6 +860,7 @@ function HomeScreen({ user, stats, onPick }) {
     { id: 'thrift', title: 'Thrift', desc: 'Run daily, weekly, monthly, rotating cycle or target savings circles and track every contribution.', icon: PiggyBank, tone: 'green', stat: `${stats.plans} active plan(s)` },
     { id: 'loans', title: 'Loan Tracking', desc: 'Track money you’ve lent out and personal loans you’ve received, with reminders.', icon: HandCoins, tone: 'steel', stat: `${stats.loans} loan(s) on file` },
     { id: 'payments', title: 'Payment Portal', desc: 'Invoice clients, issue receipts, and send payment reminders for your business.', icon: Wallet, tone: 'gold', stat: `${stats.invoices} invoice(s)` },
+    { id: 'spending', title: 'Spending Tracker', desc: 'Log personal or business expenses by category and see where your money goes.', icon: CreditCard, tone: 'brick', stat: `${stats.expenses} expense(s) logged` },
   ];
   return (
     <>
@@ -879,6 +892,7 @@ function App() {
   const [loansReceived, setLoansReceived] = useState(() => (PERSISTED && PERSISTED.loansReceived) || seedLoansReceived());
   const [loanContacts, setLoanContacts] = useState(() => (PERSISTED && PERSISTED.loanContacts) || seedLoanContacts());
   const [loanTabs, setLoanTabs] = useState(() => (PERSISTED && PERSISTED.loanTabs) || seedLoanTabs());
+  const [expenses, setExpenses] = useState(() => (PERSISTED && PERSISTED.expenses) || seedExpenses());
   const [clients, setClients] = useState(() => (PERSISTED && PERSISTED.clients) || seedClients());
   const [invoices, setInvoices] = useState(() => (PERSISTED && PERSISTED.invoices) || seedInvoices());
   const [receipts, setReceipts] = useState(() => (PERSISTED && PERSISTED.receipts) || seedReceipts());
@@ -898,6 +912,7 @@ function App() {
   const [loanReceivedSearch, setLoanReceivedSearch] = useState('');
   const [loanTabSearch, setLoanTabSearch] = useState('');
   const [expandedTab, setExpandedTab] = useState(null);
+  const [expenseCategoryFilter, setExpenseCategoryFilter] = useState('All');
   const [settings, setSettings] = useState(() => (PERSISTED && PERSISTED.settings) || seedSettings());
   const [newLoginEmail, setNewLoginEmail] = useState('');
   const [newLoginPassword, setNewLoginPassword] = useState('');
@@ -919,7 +934,7 @@ function App() {
   useEffect(() => {
     const payload = {
       savedAt: new Date().toISOString(),
-      users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs,
+      users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, expenses,
       clients, invoices, receipts, settings,
     };
     try {
@@ -927,7 +942,7 @@ function App() {
     } catch (err) {
       console.warn('PocketLedger: could not save data to this device.', err);
     }
-  }, [users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, clients, invoices, receipts, settings]);
+  }, [users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, expenses, clients, invoices, receipts, settings]);
 
   const fmt = (n) => settings.currencySymbol + Math.round(Number(n || 0)).toLocaleString('en-NG');
   const flash = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
@@ -1092,6 +1107,13 @@ function App() {
   const totalInvoiced = invoices.reduce((s, i) => s + invoiceTotal(i), 0);
   const totalReceived = receipts.reduce((s, r) => s + r.amount, 0);
   const totalOutstanding = invoices.filter((i) => i.status !== 'paid').reduce((s, i) => s + invoiceTotal(i), 0);
+  const totalSpent = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+  const spentThisMonth = expenses.filter((e) => e.date.slice(0, 7) === todayISO().slice(0, 7)).reduce((s, e) => s + Number(e.amount || 0), 0);
+  const spendByCategory = useMemo(() => {
+    const map = {};
+    expenses.forEach((e) => { map[e.category] = (map[e.category] || 0) + Number(e.amount || 0); });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  }, [expenses]);
   const moduleAlerts = (groupNames) => alerts.filter((a) => groupNames.includes(a.group));
 
   const chartData = useMemo(() => {
@@ -1347,9 +1369,61 @@ function App() {
   };
   const loanContactById = (id) => loanContacts.find((c) => c.id === id);
 
+  /* ---------- spending tracker ---------- */
+  const submitNewExpense = () => {
+    if (!form.amount || !form.category) { flash('Pick a category and enter an amount.'); return; }
+    const expense = { id: uid(), category: form.category, amount: Number(form.amount), date: form.date || todayISO(), note: form.note || '' };
+    setExpenses((prev) => [expense, ...prev]);
+    closeModal();
+    flash('Expense logged.');
+  };
+  const submitEditExpense = () => {
+    if (!form.amount || !form.category) { flash('Pick a category and enter an amount.'); return; }
+    setExpenses((prev) => prev.map((e) => e.id === form.id ? { ...e, category: form.category, amount: Number(form.amount), date: form.date, note: form.note || '' } : e));
+    closeModal();
+    flash('Expense updated.');
+  };
+  const deleteExpense = (expenseId) => {
+    if (!window.confirm('Delete this expense? This cannot be undone.')) return;
+    setExpenses((prev) => prev.filter((e) => e.id !== expenseId));
+  };
+
+  /* ---------- thrift member loans (from a plan's pool) ---------- */
+  const submitPlanMemberLoan = () => {
+    if (!form.memberId || !form.amount) { flash('Pick a member and enter an amount.'); return; }
+    const member = memberById(form.memberId);
+    const amount = Number(form.amount);
+    const plan = planById(form.planId);
+    if (form.destination === 'loans') {
+      const loan = {
+        id: uid(), borrower: member ? member.name : '', phone: member ? member.phone : '',
+        principal: amount, interestRate: Number(form.interestRate || 0),
+        dateGiven: form.date || todayISO(), dueDate: form.dueDate || todayISO(),
+        linkedPlanId: form.planId, note: form.note || `Loan from ${plan ? plan.name : 'thrift plan'} pool`, repayments: [],
+      };
+      setLoansGiven((l) => [loan, ...l]);
+      flash(`Loan sent to Loans \u2192 Given for ${member ? member.name : 'the member'}.`);
+    } else {
+      setPlans((prev) => prev.map((p) => p.id === form.planId
+        ? { ...p, memberLoans: [...(p.memberLoans || []), { id: uid(), memberId: form.memberId, amount, date: form.date || todayISO(), note: form.note || '', repaid: false }] }
+        : p));
+      flash(`${fmt(amount)} recorded as a loan from ${plan ? plan.name : 'this plan'}'s pool for ${member ? member.name : 'the member'}.`);
+    }
+    closeModal();
+  };
+  const togglePlanMemberLoanRepaid = (planId, loanId) => {
+    setPlans((prev) => prev.map((p) => p.id === planId
+      ? { ...p, memberLoans: (p.memberLoans || []).map((ml) => ml.id === loanId ? { ...ml, repaid: !ml.repaid } : ml) }
+      : p));
+  };
+  const deletePlanMemberLoan = (planId, loanId) => {
+    if (!window.confirm('Delete this loan record? This cannot be undone.')) return;
+    setPlans((prev) => prev.map((p) => p.id === planId ? { ...p, memberLoans: (p.memberLoans || []).filter((ml) => ml.id !== loanId) } : p));
+  };
+
   /* ---------- import / export ---------- */
   const exportBackup = () => {
-    const payload = { exportedAt: new Date().toISOString(), members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, clients, invoices, receipts, settings };
+    const payload = { exportedAt: new Date().toISOString(), members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, expenses, clients, invoices, receipts, settings };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1391,6 +1465,7 @@ function App() {
         setLoansReceived(data.loansReceived || []);
         setLoanContacts(data.loanContacts || []);
         setLoanTabs(data.loanTabs || []);
+        setExpenses(data.expenses || []);
         setClients(data.clients || []);
         setInvoices(data.invoices || []);
         setReceipts(data.receipts || []);
@@ -1413,6 +1488,7 @@ function App() {
     setLoansReceived(seedLoansReceived());
     setLoanContacts(seedLoanContacts());
     setLoanTabs(seedLoanTabs());
+    setExpenses(seedExpenses());
     setClients(seedClients());
     setInvoices(seedInvoices());
     setReceipts(seedReceipts());
@@ -1420,7 +1496,7 @@ function App() {
   };
   const clearAllData = () => {
     if (!window.confirm('This deletes every plan, contributor, loan, client, invoice and receipt. This cannot be undone. Continue?')) return;
-    setMembers([]); setPlans([]); setContributions([]); setLoansGiven([]); setLoansReceived([]); setLoanContacts([]); setLoanTabs([]); setClients([]); setInvoices([]); setReceipts([]);
+    setMembers([]); setPlans([]); setContributions([]); setLoansGiven([]); setLoansReceived([]); setLoanContacts([]); setLoanTabs([]); setExpenses([]); setClients([]); setInvoices([]); setReceipts([]);
     flash('All data cleared.');
   };
 
@@ -1677,6 +1753,11 @@ function App() {
                   <option value="" disabled>Add contributor to plan…</option>
                   {unassigned.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                 </select>
+                {plan.memberIds.length > 0 && (
+                  <button className="btn btn-small btn-outline" onClick={() => openModal('planMemberLoan', { planId: plan.id, destination: 'infused', date: todayISO() })}>
+                    <HandCoins size={14} /> Member loan
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1769,6 +1850,25 @@ function App() {
                 </tbody>
               </table>
             </div>
+
+            {(plan.memberLoans || []).length > 0 && (
+              <div style={{ marginTop: 18 }}>
+                <div className="panel-title" style={{ fontSize: 13 }}>Loans given from this pool</div>
+                <ul className="tab-entry-list">
+                  {plan.memberLoans.map((ml) => (
+                    <li key={ml.id} className={`tab-entry-row ${ml.repaid ? 'tab-entry-row-payment' : 'tab-entry-row-borrow'}`}>
+                      <span className="tab-entry-amount kb-mono">{fmt(ml.amount)}</span>
+                      <span className="tab-entry-note">{memberById(ml.memberId)?.name || 'Member'}{ml.note ? ` — ${ml.note}` : ''}</span>
+                      <span className="tab-entry-date kb-mono">{new Date(ml.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                      <div className="tab-entry-actions">
+                        <button className="btn btn-small btn-ghost" onClick={() => togglePlanMemberLoanRepaid(plan.id, ml.id)}>{ml.repaid ? 'Repaid' : 'Mark repaid'}</button>
+                        <button className="icon-btn" onClick={() => deletePlanMemberLoan(plan.id, ml.id)}><Trash2 size={13} /></button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </>
@@ -2077,7 +2177,7 @@ function App() {
   const renderHome = () => (
     <HomeScreen
       user={currentUser}
-      stats={{ plans: plans.length, loans: loansGiven.length + loansReceived.length + loanTabs.length, invoices: invoices.length }}
+      stats={{ plans: plans.length, loans: loansGiven.length + loansReceived.length + loanTabs.length, invoices: invoices.length, expenses: expenses.length }}
       onPick={openModule}
     />
   );
@@ -2206,6 +2306,89 @@ function App() {
               );
             })}
           </div>
+        )}
+      </>
+    );
+  };
+
+  const renderSpendingOverview = () => {
+    const recentExpenses = [...expenses].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 8);
+    const topCategory = spendByCategory[0];
+    return (
+      <>
+        <SectionHeader eyebrow="Spending tracker" title="Where your money is going" />
+        <div className="stat-grid">
+          <StatCard label="Spent this month" value={fmt(spentThisMonth)} icon={CreditCard} tone="brick" sub={`${expenses.filter((e) => e.date.slice(0, 7) === todayISO().slice(0, 7)).length} expense(s)`} />
+          <StatCard label="Total logged" value={fmt(totalSpent)} icon={Wallet} tone="steel" sub={`${expenses.length} expense(s) all-time`} />
+          <StatCard label="Top category" value={topCategory ? topCategory[0] : '—'} icon={Target} tone="gold" sub={topCategory ? fmt(topCategory[1]) : 'No expenses yet'} />
+        </div>
+        <div className="two-col">
+          <div className="panel">
+            <div className="panel-title">Recent expenses</div>
+            {recentExpenses.length === 0 ? <EmptyState text="No expenses logged yet." /> : (
+              <ul className="activity-list">
+                {recentExpenses.map((e) => (
+                  <li key={e.id} className="activity-item">
+                    <span className="dot dot-out" />
+                    <span className="activity-text">{e.category}{e.note ? ` — ${e.note}` : ''} <span className="kb-mono">{fmt(e.amount)}</span></span>
+                    <span className="activity-date kb-mono">{new Date(e.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="panel">
+            <div className="panel-title">By category</div>
+            {spendByCategory.length === 0 ? <EmptyState text="Nothing logged yet." /> : (
+              <ul className="activity-list">
+                {spendByCategory.map(([cat, amt]) => (
+                  <li key={cat} className="activity-item">
+                    <span className="activity-text">{cat}</span>
+                    <span className="kb-mono">{fmt(amt)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </>
+    );
+  };
+
+  const renderExpenses = () => {
+    const filtered = expenses
+      .filter((e) => expenseCategoryFilter === 'All' || e.category === expenseCategoryFilter)
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+    return (
+      <>
+        <SectionHeader eyebrow="Every expense" title="Expenses"
+          action={<button className="btn btn-primary" onClick={() => openModal('newExpense', { date: todayISO() })}><Plus size={16} /> Log expense</button>} />
+        <div className="field-row" style={{ marginBottom: 14 }}>
+          <select className="kb-input" value={expenseCategoryFilter} onChange={(e) => setExpenseCategoryFilter(e.target.value)}>
+            <option value="All">All categories</option>
+            {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        {filtered.length === 0 ? <EmptyState text="No expenses logged yet." /> : (
+          <table className="history-table">
+            <thead><tr><th>Date</th><th>Category</th><th>Note</th><th>Amount</th><th></th></tr></thead>
+            <tbody>
+              {filtered.map((e) => (
+                <tr key={e.id}>
+                  <td className="kb-mono">{new Date(e.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                  <td>{e.category}</td>
+                  <td className="panel-sub">{e.note || '—'}</td>
+                  <td className="kb-mono">{fmt(e.amount)}</td>
+                  <td>
+                    <div className="tab-entry-actions">
+                      <button className="icon-btn" onClick={() => openModal('editExpense', { ...e })}><Edit3 size={13} /></button>
+                      <button className="icon-btn" onClick={() => deleteExpense(e.id)}><Trash2 size={13} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </>
     );
@@ -2378,6 +2561,7 @@ function App() {
     thrift: { label: 'Thrift', icon: PiggyBank },
     loans: { label: 'Loan Tracking', icon: HandCoins },
     payments: { label: 'Payment Portal', icon: Wallet },
+    spending: { label: 'Spending Tracker', icon: CreditCard },
   };
   const MODULE_NAV = {
     thrift: [
@@ -2397,12 +2581,16 @@ function App() {
       { id: 'invoices', label: 'Invoices', icon: FileText },
       { id: 'receipts', label: 'Receipts', icon: Receipt },
     ],
+    spending: [
+      { id: 'spendingOverview', label: 'Overview', icon: LayoutDashboard },
+      { id: 'expenses', label: 'Expenses', icon: CreditCard },
+    ],
   };
   const openModule = (mod) => { setActiveModule(mod); setActiveTab(MODULE_NAV[mod][0].id); };
   const goHome = () => { setActiveModule('home'); setActiveTab('home'); };
   const goStart = () => { setActiveModule('home'); setActiveTab('home'); };
   const MODULE_ALERT_GROUPS = {
-    thrift: ['Thrift contributions'], loans: ['Loans given', 'Loans received'], payments: ['Payments'],
+    thrift: ['Thrift contributions'], loans: ['Loans given', 'Loans received'], payments: ['Payments'], spending: [],
   };
 
   if (!currentUser) {
@@ -2573,7 +2761,8 @@ function App() {
         .welcome-carousel-wrap .carousel{background:none;border:none;box-shadow:none;padding:0 30px 34px;margin-bottom:0;min-height:200px;}
         .welcome-carousel-wrap .carousel.tone-green,
         .welcome-carousel-wrap .carousel.tone-steel,
-        .welcome-carousel-wrap .carousel.tone-gold{background:none;}
+        .welcome-carousel-wrap .carousel.tone-gold,
+        .welcome-carousel-wrap .carousel.tone-brick{background:none;}
         .welcome-carousel-wrap .carousel-icon{background:rgba(247,243,234,0.14);color:#F7F3EA;}
         .welcome-carousel-wrap .carousel-title{color:#F7F3EA;}
         .welcome-carousel-wrap .carousel-desc{color:rgba(247,243,234,0.72);}
@@ -2650,6 +2839,7 @@ function App() {
         .carousel.tone-green{background:linear-gradient(135deg, var(--green-bg), #fff 70%);}
         .carousel.tone-steel{background:linear-gradient(135deg, var(--steel-bg), #fff 70%);}
         .carousel.tone-gold{background:linear-gradient(135deg, var(--gold-bg), #fff 70%);}
+        .carousel.tone-brick{background:linear-gradient(135deg, var(--brick-bg), #fff 70%);}
         .carousel-slide{display:flex;flex-direction:column;align-items:flex-end;gap:10px;flex:1;}
         .carousel-icon{width:46px;height:46px;border-radius:12px;background:rgba(255,255,255,0.7);display:flex;align-items:center;justify-content:center;color:var(--ink);flex-shrink:0;}
         .carousel-body{text-align:right;}
@@ -2664,6 +2854,7 @@ function App() {
         .home-card.tone-green .home-card-icon{background:var(--green-bg);color:var(--green);}
         .home-card.tone-steel .home-card-icon{background:var(--steel-bg);color:var(--steel);}
         .home-card.tone-gold .home-card-icon{background:var(--gold-bg);color:var(--gold);}
+        .home-card.tone-brick .home-card-icon{background:var(--brick-bg);color:var(--brick);}
         .home-card-title{font-size:20px;font-weight:600;margin-bottom:8px;}
         .home-card-desc{font-size:13px;color:var(--ink-soft);line-height:1.5;margin-bottom:18px;min-height:58px;}
         .home-card-foot{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;font-weight:600;color:var(--ink);padding-top:14px;border-top:1px solid var(--paper-line);}
@@ -2759,6 +2950,8 @@ function App() {
             {activeTab === 'invoices' && renderInvoices()}
             {activeTab === 'clients' && renderClients()}
             {activeTab === 'receipts' && renderReceipts()}
+            {activeTab === 'spendingOverview' && renderSpendingOverview()}
+            {activeTab === 'expenses' && renderExpenses()}
             {activeTab === 'alerts' && renderAlerts()}
             {activeTab === 'settings' && renderSettings()}
           </div>
@@ -2984,6 +3177,92 @@ function App() {
             updateTabEntry(form.tabId, form.entryId, { type: form.type, amount: Number(form.amount), date: form.date || todayISO(), note: form.note || '' });
             closeModal();
           }}>Save changes</button>
+        </Modal>
+      )}
+      {modal === 'newExpense' && (
+        <Modal title="Log an expense" onClose={closeModal}>
+          <div className="field"><label>Category</label>
+            <select className="kb-input" value={form.category || ''} onChange={(e) => setField('category', e.target.value)}>
+              <option value="">Choose a category…</option>
+              {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="field-row">
+            <div className="field"><label>Amount</label>
+              <input type="number" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} placeholder="5000" />
+            </div>
+            <div className="field"><label>Date</label>
+              <input type="date" className="kb-input" value={form.date || todayISO()} onChange={(e) => setField('date', e.target.value)} />
+            </div>
+          </div>
+          <div className="field"><label>Note (optional)</label>
+            <input className="kb-input" value={form.note || ''} onChange={(e) => setField('note', e.target.value)} placeholder="What was this for?" />
+          </div>
+          <button className="btn btn-primary" onClick={submitNewExpense}>Save expense</button>
+        </Modal>
+      )}
+      {modal === 'editExpense' && (
+        <Modal title="Edit expense" onClose={closeModal}>
+          <div className="field"><label>Category</label>
+            <select className="kb-input" value={form.category || ''} onChange={(e) => setField('category', e.target.value)}>
+              {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="field-row">
+            <div className="field"><label>Amount</label>
+              <input type="number" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} />
+            </div>
+            <div className="field"><label>Date</label>
+              <input type="date" className="kb-input" value={form.date || todayISO()} onChange={(e) => setField('date', e.target.value)} />
+            </div>
+          </div>
+          <div className="field"><label>Note (optional)</label>
+            <input className="kb-input" value={form.note || ''} onChange={(e) => setField('note', e.target.value)} placeholder="What was this for?" />
+          </div>
+          <button className="btn btn-primary" onClick={submitEditExpense}>Save changes</button>
+        </Modal>
+      )}
+      {modal === 'planMemberLoan' && (
+        <Modal title="Give a member a loan" onClose={closeModal}>
+          <div className="field"><label>Member</label>
+            <select className="kb-input" value={form.memberId || ''} onChange={(e) => setField('memberId', e.target.value)}>
+              <option value="">Choose a contributor…</option>
+              {(planById(form.planId)?.memberIds || []).map((id) => <option key={id} value={id}>{memberById(id)?.name}</option>)}
+            </select>
+          </div>
+          <div className="field-row">
+            <div className="field"><label>Amount</label>
+              <input type="number" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} placeholder="10000" />
+            </div>
+            <div className="field"><label>Date</label>
+              <input type="date" className="kb-input" value={form.date || todayISO()} onChange={(e) => setField('date', e.target.value)} />
+            </div>
+          </div>
+          <div className="field"><label>Where should this go?</label>
+            <div className="tab-entry-type-toggle">
+              <button type="button" className={`tab-type-btn ${form.destination !== 'loans' ? 'tab-type-active-borrow' : ''}`} onClick={() => setField('destination', 'infused')}>Infused into thrift</button>
+              <button type="button" className={`tab-type-btn ${form.destination === 'loans' ? 'tab-type-active-payment' : ''}`} onClick={() => setField('destination', 'loans')}>Send to Loans section</button>
+            </div>
+            <div className="field-hint">
+              {form.destination === 'loans'
+                ? 'Creates a tracked loan in Loans \u2192 Given, linked back to this plan, with a due date and reminders.'
+                : "Keeps it simple \u2014 recorded against this plan's pool only, no due date or reminders."}
+            </div>
+          </div>
+          {form.destination === 'loans' && (
+            <div className="field-row">
+              <div className="field"><label>Due date</label>
+                <input type="date" className="kb-input" value={form.dueDate || ''} onChange={(e) => setField('dueDate', e.target.value)} />
+              </div>
+              <div className="field"><label>Interest (%/yr, optional)</label>
+                <input type="number" className="kb-input" value={form.interestRate || ''} onChange={(e) => setField('interestRate', e.target.value)} placeholder="0" />
+              </div>
+            </div>
+          )}
+          <div className="field"><label>Note (optional)</label>
+            <input className="kb-input" value={form.note || ''} onChange={(e) => setField('note', e.target.value)} placeholder="What is this loan for?" />
+          </div>
+          <button className="btn btn-primary" onClick={submitPlanMemberLoan}>Give loan</button>
         </Modal>
       )}
       {modal === 'newClient' && (
