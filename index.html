@@ -259,6 +259,13 @@ function seedExpenses() {
     { id: 'ex5', category: 'Utilities', amount: 8000, date: '2026-07-05', note: 'Electricity token' },
   ];
 }
+function seedBudgets() {
+  return [
+    { id: 'bg1', category: 'Food', monthlyLimit: 20000 },
+    { id: 'bg2', category: 'Transport', monthlyLimit: 8000 },
+    { id: 'bg3', category: 'Business', monthlyLimit: 25000 },
+  ];
+}
 
 function seedSettings() {
   return {
@@ -839,7 +846,7 @@ function WelcomeScreen({ settings, onStart }) {
     { title: 'Thrift', icon: PiggyBank, tone: 'green', desc: 'Daily, weekly and monthly ajo, target savings, and rotating cycle thrift where one member is paid out each round until everyone has had a turn.' },
     { title: 'Loan Tracking', icon: HandCoins, tone: 'steel', desc: 'Keep tabs on money you’ve lent and personal loans you’ve taken, with interest, due dates and reminders handled for you.' },
     { title: 'Payment Portal', icon: Wallet, tone: 'gold', desc: 'Bill clients with branded invoices, collect payments, and issue proper receipts — all shareable straight to WhatsApp.' },
-    { title: 'Spending Tracker', icon: CreditCard, tone: 'brick', desc: 'Log every expense by category so you always know where your money went.' },
+    { title: 'Expense & Budgeting', icon: CreditCard, tone: 'brick', desc: 'Log every expense by category, set monthly budgets, and see where your money went.' },
   ];
   return (
     <div className="welcome-shell">
@@ -860,7 +867,7 @@ function HomeScreen({ user, stats, onPick }) {
     { id: 'thrift', title: 'Thrift', desc: 'Run daily, weekly, monthly, rotating cycle or target savings circles and track every contribution.', icon: PiggyBank, tone: 'green', stat: `${stats.plans} active plan(s)` },
     { id: 'loans', title: 'Loan Tracking', desc: 'Track money you’ve lent out and personal loans you’ve received, with reminders.', icon: HandCoins, tone: 'steel', stat: `${stats.loans} loan(s) on file` },
     { id: 'payments', title: 'Payment Portal', desc: 'Invoice clients, issue receipts, and send payment reminders for your business.', icon: Wallet, tone: 'gold', stat: `${stats.invoices} invoice(s)` },
-    { id: 'spending', title: 'Spending Tracker', desc: 'Log personal or business expenses by category and see where your money goes.', icon: CreditCard, tone: 'brick', stat: `${stats.expenses} expense(s) logged` },
+    { id: 'spending', title: 'Expense & Budgeting', desc: 'Log personal or business expenses by category, set monthly budgets, and stay on top of both.', icon: CreditCard, tone: 'brick', stat: `${stats.expenses} expense(s) logged` },
   ];
   return (
     <>
@@ -883,7 +890,8 @@ function HomeScreen({ user, stats, onPick }) {
 function App() {
   const [users, setUsers] = useState(() => (PERSISTED && PERSISTED.users) || [{ id: 'u1', name: 'Amaka Obi', businessName: 'PocketLedger Ledger', email: 'demo@pocketledger.ng', password: 'demo1234' }]);
   const [currentUser, setCurrentUser] = useState(null);
-  const [activeModule, setActiveModule] = useState('welcome');
+  const [activeModule, setActiveModule] = useState('home');
+  const [preAuthWelcomeSeen, setPreAuthWelcomeSeen] = useState(false);
 
   const [members, setMembers] = useState(() => (PERSISTED && PERSISTED.members) || seedMembers());
   const [plans, setPlans] = useState(() => (PERSISTED && PERSISTED.plans) || seedPlans());
@@ -893,6 +901,7 @@ function App() {
   const [loanContacts, setLoanContacts] = useState(() => (PERSISTED && PERSISTED.loanContacts) || seedLoanContacts());
   const [loanTabs, setLoanTabs] = useState(() => (PERSISTED && PERSISTED.loanTabs) || seedLoanTabs());
   const [expenses, setExpenses] = useState(() => (PERSISTED && PERSISTED.expenses) || seedExpenses());
+  const [budgets, setBudgets] = useState(() => (PERSISTED && PERSISTED.budgets) || seedBudgets());
   const [clients, setClients] = useState(() => (PERSISTED && PERSISTED.clients) || seedClients());
   const [invoices, setInvoices] = useState(() => (PERSISTED && PERSISTED.invoices) || seedInvoices());
   const [receipts, setReceipts] = useState(() => (PERSISTED && PERSISTED.receipts) || seedReceipts());
@@ -902,7 +911,7 @@ function App() {
   const [invoiceDoc, setInvoiceDoc] = useState(null);
   const [paymentReceiptDoc, setPaymentReceiptDoc] = useState(null);
 
-  const [activeTab, setActiveTab] = useState('welcome');
+  const [activeTab, setActiveTab] = useState('home');
   const [selectedPlanId, setSelectedPlanId] = useState('tp1');
   const [selectedMemberId, setSelectedMemberId] = useState('m1');
   const [expandedLoan, setExpandedLoan] = useState(null);
@@ -934,7 +943,7 @@ function App() {
   useEffect(() => {
     const payload = {
       savedAt: new Date().toISOString(),
-      users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, expenses,
+      users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, expenses, budgets,
       clients, invoices, receipts, settings,
     };
     try {
@@ -942,7 +951,7 @@ function App() {
     } catch (err) {
       console.warn('PocketLedger: could not save data to this device.', err);
     }
-  }, [users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, expenses, clients, invoices, receipts, settings]);
+  }, [users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, expenses, budgets, clients, invoices, receipts, settings]);
 
   const fmt = (n) => settings.currencySymbol + Math.round(Number(n || 0)).toLocaleString('en-NG');
   const flash = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
@@ -982,7 +991,7 @@ function App() {
   useEffect(() => {
     if (currentUser && !historyInitedRef.current) {
       historyInitedRef.current = true;
-      window.history.replaceState(pageSnapshot('welcome', 'welcome', null), '');
+      window.history.replaceState(pageSnapshot('home', 'home', null), '');
     }
     if (!currentUser) historyInitedRef.current = false;
   }, [currentUser]);
@@ -1006,12 +1015,12 @@ function App() {
         window.history.pushState(pageSnapshot(activeModule, activeTab, selectedPlanId), '');
         return;
       }
-      const atWelcome = activeModule === 'welcome';
-      if (atWelcome) {
+      const atHome = activeModule === 'home' && activeTab === 'home';
+      if (atHome) {
         if (exitArmedRef.current) return; // second press in a row: let it actually exit
         exitArmedRef.current = true;
         flash('Press back again to exit.');
-        window.history.pushState(pageSnapshot('welcome', 'welcome', null), '');
+        window.history.pushState(pageSnapshot('home', 'home', null), '');
         clearTimeout(exitTimerRef.current);
         exitTimerRef.current = setTimeout(() => { exitArmedRef.current = false; }, 2200);
         return;
@@ -1023,7 +1032,7 @@ function App() {
         setActiveTab(s.tab);
         setSelectedPlanId(s.planId || null);
       } else {
-        setActiveModule('welcome'); setActiveTab('welcome'); setSelectedPlanId(null);
+        setActiveModule('home'); setActiveTab('home'); setSelectedPlanId(null);
       }
     };
     window.addEventListener('popstate', handlePopState);
@@ -1114,6 +1123,12 @@ function App() {
     expenses.forEach((e) => { map[e.category] = (map[e.category] || 0) + Number(e.amount || 0); });
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
   }, [expenses]);
+  const spentThisMonthByCategory = useMemo(() => {
+    const map = {};
+    const thisMonth = todayISO().slice(0, 7);
+    expenses.filter((e) => e.date.slice(0, 7) === thisMonth).forEach((e) => { map[e.category] = (map[e.category] || 0) + Number(e.amount || 0); });
+    return map;
+  }, [expenses]);
   const moduleAlerts = (groupNames) => alerts.filter((a) => groupNames.includes(a.group));
 
   const chartData = useMemo(() => {
@@ -1196,15 +1211,15 @@ function App() {
     setLoansReceived((l) => [loan, ...l]);
     closeModal();
   };
-  const handleLogin = (user) => { setCurrentUser(user); setActiveModule('welcome'); setActiveTab('welcome'); flash(`Welcome back, ${user.name.split(' ')[0]}.`); };
+  const handleLogin = (user) => { setCurrentUser(user); setActiveModule('home'); setActiveTab('home'); flash(`Welcome back, ${user.name.split(' ')[0]}.`); };
   const handleSignup = (user) => {
     setUsers((u) => [...u, user]);
     setSettings((s) => ({ ...s, businessName: user.businessName, ownerName: user.name }));
     setCurrentUser(user);
-    setActiveModule('welcome'); setActiveTab('welcome');
+    setActiveModule('home'); setActiveTab('home');
     flash('Account created — welcome to PocketLedger!');
   };
-  const handleLogout = () => { setCurrentUser(null); setActiveModule('welcome'); setActiveTab('welcome'); };
+  const handleLogout = () => { setCurrentUser(null); setActiveModule('home'); setActiveTab('home'); };
   const updateLoginEmail = () => {
     if (!newLoginEmail || !newLoginEmail.includes('@')) { flash('Enter a valid email address.'); return; }
     if (users.some((u) => u.id !== currentUser.id && u.email.toLowerCase() === newLoginEmail.toLowerCase())) {
@@ -1368,6 +1383,13 @@ function App() {
     setLoanTabs((prev) => prev.filter((t) => t.id !== tabId));
   };
   const loanContactById = (id) => loanContacts.find((c) => c.id === id);
+  const submitEditLoanTab = () => {
+    if (!form.contactName) { flash('Enter a name for this person.'); return; }
+    setLoanContacts((prev) => prev.map((c) => c.id === form.contactId ? { ...c, name: form.contactName, phone: form.contactPhone || '' } : c));
+    setLoanTabs((prev) => prev.map((t) => t.id === form.tabId ? { ...t, note: form.note || '' } : t));
+    closeModal();
+    flash('Tab updated.');
+  };
 
   /* ---------- spending tracker ---------- */
   const submitNewExpense = () => {
@@ -1386,6 +1408,21 @@ function App() {
   const deleteExpense = (expenseId) => {
     if (!window.confirm('Delete this expense? This cannot be undone.')) return;
     setExpenses((prev) => prev.filter((e) => e.id !== expenseId));
+  };
+  const budgetForCategory = (category) => budgets.find((b) => b.category === category);
+  const submitBudget = () => {
+    if (!form.category || !form.monthlyLimit) { flash('Pick a category and enter a monthly limit.'); return; }
+    setBudgets((prev) => {
+      const existing = prev.find((b) => b.category === form.category);
+      if (existing) return prev.map((b) => b.category === form.category ? { ...b, monthlyLimit: Number(form.monthlyLimit) } : b);
+      return [...prev, { id: uid(), category: form.category, monthlyLimit: Number(form.monthlyLimit) }];
+    });
+    closeModal();
+    flash('Budget saved.');
+  };
+  const deleteBudget = (budgetId) => {
+    if (!window.confirm('Remove this budget? This cannot be undone.')) return;
+    setBudgets((prev) => prev.filter((b) => b.id !== budgetId));
   };
 
   /* ---------- thrift member loans (from a plan's pool) ---------- */
@@ -1423,7 +1460,7 @@ function App() {
 
   /* ---------- import / export ---------- */
   const exportBackup = () => {
-    const payload = { exportedAt: new Date().toISOString(), members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, expenses, clients, invoices, receipts, settings };
+    const payload = { exportedAt: new Date().toISOString(), members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, expenses, budgets, clients, invoices, receipts, settings };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1466,6 +1503,7 @@ function App() {
         setLoanContacts(data.loanContacts || []);
         setLoanTabs(data.loanTabs || []);
         setExpenses(data.expenses || []);
+        setBudgets(data.budgets || []);
         setClients(data.clients || []);
         setInvoices(data.invoices || []);
         setReceipts(data.receipts || []);
@@ -1489,6 +1527,7 @@ function App() {
     setLoanContacts(seedLoanContacts());
     setLoanTabs(seedLoanTabs());
     setExpenses(seedExpenses());
+    setBudgets(seedBudgets());
     setClients(seedClients());
     setInvoices(seedInvoices());
     setReceipts(seedReceipts());
@@ -1496,7 +1535,7 @@ function App() {
   };
   const clearAllData = () => {
     if (!window.confirm('This deletes every plan, contributor, loan, client, invoice and receipt. This cannot be undone. Continue?')) return;
-    setMembers([]); setPlans([]); setContributions([]); setLoansGiven([]); setLoansReceived([]); setLoanContacts([]); setLoanTabs([]); setExpenses([]); setClients([]); setInvoices([]); setReceipts([]);
+    setMembers([]); setPlans([]); setContributions([]); setLoansGiven([]); setLoansReceived([]); setLoanContacts([]); setLoanTabs([]); setExpenses([]); setBudgets([]); setClients([]); setInvoices([]); setReceipts([]);
     flash('All data cleared.');
   };
 
@@ -2138,6 +2177,7 @@ function App() {
                     </div>
                     <div className="loan-card-right">
                       <div className={`kb-mono outstanding ${balanceCls}`}><span>{balanceLabel}</span>{fmt(Math.abs(balance))}</div>
+                      <button className="icon-btn" onClick={(e) => { e.stopPropagation(); openModal('editLoanTab', { tabId: t.id, contactId: t.contactId, contactName: contact ? contact.name : '', contactPhone: contact ? contact.phone : '', note: t.note || '' }); }}><Edit3 size={15} /></button>
                       <button className="icon-btn" onClick={(e) => { e.stopPropagation(); deleteLoanTab(t.id); }}><Trash2 size={15} /></button>
                       <ChevronDown size={16} className={`chev ${isOpen ? 'chev-open' : ''}`} />
                     </div>
@@ -2316,11 +2356,12 @@ function App() {
     const topCategory = spendByCategory[0];
     return (
       <>
-        <SectionHeader eyebrow="Spending tracker" title="Where your money is going" />
+        <SectionHeader eyebrow="Expense & budgeting" title="Where your money is going" />
         <div className="stat-grid">
           <StatCard label="Spent this month" value={fmt(spentThisMonth)} icon={CreditCard} tone="brick" sub={`${expenses.filter((e) => e.date.slice(0, 7) === todayISO().slice(0, 7)).length} expense(s)`} />
           <StatCard label="Total logged" value={fmt(totalSpent)} icon={Wallet} tone="steel" sub={`${expenses.length} expense(s) all-time`} />
           <StatCard label="Top category" value={topCategory ? topCategory[0] : '—'} icon={Target} tone="gold" sub={topCategory ? fmt(topCategory[1]) : 'No expenses yet'} />
+          <StatCard label="Budgets over limit" value={budgets.filter((b) => (spentThisMonthByCategory[b.category] || 0) > b.monthlyLimit).length} icon={AlertTriangle} tone="brick" sub={`${budgets.length} budget(s) set`} />
         </div>
         <div className="two-col">
           <div className="panel">
@@ -2389,6 +2430,48 @@ function App() {
               ))}
             </tbody>
           </table>
+        )}
+      </>
+    );
+  };
+
+  const renderBudgets = () => {
+    const uncovered = EXPENSE_CATEGORIES.filter((c) => !budgetForCategory(c));
+    return (
+      <>
+        <SectionHeader eyebrow="Stay within limits" title="Monthly budgets"
+          action={<button className="btn btn-primary" onClick={() => openModal('setBudget', {})}><Plus size={16} /> Set a budget</button>} />
+        {budgets.length === 0 ? <EmptyState text="No budgets set yet — set a monthly limit for a category to start tracking against it." /> : (
+          <div className="loan-list">
+            {budgets.map((b) => {
+              const spent = spentThisMonthByCategory[b.category] || 0;
+              const over = spent > b.monthlyLimit;
+              return (
+                <div key={b.id} className="loan-card">
+                  <div className="loan-card-body" style={{ paddingTop: 16 }}>
+                    <div className="loan-card-top" style={{ cursor: 'default' }}>
+                      <div>
+                        <div className="loan-name kb-display">{b.category}</div>
+                        <div className="panel-sub" style={over ? { color: 'var(--brick)' } : undefined}>
+                          {fmt(spent)} of {fmt(b.monthlyLimit)} spent this month{over ? ' — over budget' : ''}
+                        </div>
+                      </div>
+                      <div className="loan-card-right">
+                        <button className="btn btn-small btn-outline" onClick={() => openModal('setBudget', { id: b.id, category: b.category, monthlyLimit: b.monthlyLimit })}><Edit3 size={13} /> Edit</button>
+                        <button className="icon-btn" onClick={() => deleteBudget(b.id)}><Trash2 size={15} /></button>
+                      </div>
+                    </div>
+                    <ProgressBar value={spent} max={b.monthlyLimit} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {uncovered.length > 0 && (
+          <div className="field-hint" style={{ marginTop: 16 }}>
+            No budget set yet for: {uncovered.join(', ')}.
+          </div>
         )}
       </>
     );
@@ -2561,7 +2644,7 @@ function App() {
     thrift: { label: 'Thrift', icon: PiggyBank },
     loans: { label: 'Loan Tracking', icon: HandCoins },
     payments: { label: 'Payment Portal', icon: Wallet },
-    spending: { label: 'Spending Tracker', icon: CreditCard },
+    spending: { label: 'Expense & Budgeting', icon: CreditCard },
   };
   const MODULE_NAV = {
     thrift: [
@@ -2584,14 +2667,23 @@ function App() {
     spending: [
       { id: 'spendingOverview', label: 'Overview', icon: LayoutDashboard },
       { id: 'expenses', label: 'Expenses', icon: CreditCard },
+      { id: 'budgets', label: 'Budgets', icon: Target },
     ],
   };
   const openModule = (mod) => { setActiveModule(mod); setActiveTab(MODULE_NAV[mod][0].id); };
   const goHome = () => { setActiveModule('home'); setActiveTab('home'); };
-  const goStart = () => { setActiveModule('home'); setActiveTab('home'); };
   const MODULE_ALERT_GROUPS = {
     thrift: ['Thrift contributions'], loans: ['Loans given', 'Loans received'], payments: ['Payments'], spending: [],
   };
+
+  if (!preAuthWelcomeSeen) {
+    return (
+      <>
+        <WelcomeScreen settings={settings} onStart={() => setPreAuthWelcomeSeen(true)} />
+        {toast && <div className="toast">{toast}</div>}
+      </>
+    );
+  }
 
   if (!currentUser) {
     return (
@@ -2757,7 +2849,7 @@ function App() {
         .welcome-brand{display:flex;align-items:center;gap:10px;align-self:flex-start;}
         .welcome-brand .logo-mark{width:38px;height:38px;}
         .welcome-brand .kb-title{font-size:18px;font-weight:600;color:#F7F3EA;}
-        .welcome-carousel-wrap{flex:1;width:100%;max-width:520px;display:flex;align-items:center;justify-content:center;}
+        .welcome-carousel-wrap{flex:1;width:100%;max-width:520px;display:flex;align-items:flex-end;justify-content:center;}
         .welcome-carousel-wrap .carousel{background:none;border:none;box-shadow:none;padding:0 30px 34px;margin-bottom:0;min-height:200px;}
         .welcome-carousel-wrap .carousel.tone-green,
         .welcome-carousel-wrap .carousel.tone-steel,
@@ -2840,9 +2932,9 @@ function App() {
         .carousel.tone-steel{background:linear-gradient(135deg, var(--steel-bg), #fff 70%);}
         .carousel.tone-gold{background:linear-gradient(135deg, var(--gold-bg), #fff 70%);}
         .carousel.tone-brick{background:linear-gradient(135deg, var(--brick-bg), #fff 70%);}
-        .carousel-slide{display:flex;flex-direction:column;align-items:flex-end;gap:10px;flex:1;}
+        .carousel-slide{display:flex;flex-direction:column;align-items:flex-start;gap:10px;flex:1;}
         .carousel-icon{width:46px;height:46px;border-radius:12px;background:rgba(255,255,255,0.7);display:flex;align-items:center;justify-content:center;color:var(--ink);flex-shrink:0;}
-        .carousel-body{text-align:right;}
+        .carousel-body{text-align:left;}
         .carousel-title{font-size:17px;font-weight:600;margin-bottom:4px;}
         .carousel-desc{font-size:12.5px;color:var(--ink-soft);line-height:1.5;max-width:520px;}
         .carousel-dots{position:absolute;bottom:10px;left:0;right:0;display:flex;justify-content:center;gap:6px;}
@@ -2891,9 +2983,7 @@ function App() {
         }
       `}</style>
 
-      {activeModule === 'welcome' ? (
-        <WelcomeScreen settings={settings} onStart={goStart} />
-      ) : activeModule === 'home' ? (
+      {activeModule === 'home' ? (
         <div className="home-shell">
           <header className="home-topbar">
             <div className="logo" onClick={goHome} style={{ cursor: 'pointer' }} title="Home">
@@ -2952,6 +3042,7 @@ function App() {
             {activeTab === 'receipts' && renderReceipts()}
             {activeTab === 'spendingOverview' && renderSpendingOverview()}
             {activeTab === 'expenses' && renderExpenses()}
+            {activeTab === 'budgets' && renderBudgets()}
             {activeTab === 'alerts' && renderAlerts()}
             {activeTab === 'settings' && renderSettings()}
           </div>
@@ -3151,6 +3242,24 @@ function App() {
           <button className="btn btn-primary" onClick={submitNewLoanTab}>Create tab</button>
         </Modal>
       )}
+      {modal === 'editLoanTab' && (
+        <Modal title="Edit tab" onClose={closeModal}>
+          <button type="button" className="btn btn-small btn-outline" style={{ marginBottom: 4 }} onClick={() => importDeviceContact((c) => { setField('contactName', c.name || form.contactName || ''); setField('contactPhone', c.phone || form.contactPhone || ''); })}>
+            <Phone size={13} /> Import from phone contacts
+          </button>
+          <div className="field"><label>Full name</label>
+            <input className="kb-input" value={form.contactName || ''} onChange={(e) => setField('contactName', e.target.value)} placeholder="e.g. Chika Eze" />
+          </div>
+          <div className="field"><label>Phone number</label>
+            <input className="kb-input" value={form.contactPhone || ''} onChange={(e) => setField('contactPhone', e.target.value)} placeholder="080…" />
+          </div>
+          <div className="field"><label>What's this tab for? (optional)</label>
+            <input className="kb-input" value={form.note || ''} onChange={(e) => setField('note', e.target.value)} placeholder="e.g. Shop credit, casual borrowing" />
+          </div>
+          <div className="field-hint" style={{ marginBottom: 4 }}>Renaming this person here updates them everywhere they're used, since the same contact can be shared across tabs.</div>
+          <button className="btn btn-primary" onClick={submitEditLoanTab}>Save changes</button>
+        </Modal>
+      )}
       {modal === 'editTabEntry' && (
         <Modal title="Edit entry" onClose={closeModal}>
           <div className="tab-entry-type-toggle">
@@ -3220,6 +3329,20 @@ function App() {
             <input className="kb-input" value={form.note || ''} onChange={(e) => setField('note', e.target.value)} placeholder="What was this for?" />
           </div>
           <button className="btn btn-primary" onClick={submitEditExpense}>Save changes</button>
+        </Modal>
+      )}
+      {modal === 'setBudget' && (
+        <Modal title={form.id ? 'Edit budget' : 'Set a budget'} onClose={closeModal}>
+          <div className="field"><label>Category</label>
+            <select className="kb-input" value={form.category || ''} disabled={!!form.id} onChange={(e) => setField('category', e.target.value)}>
+              <option value="">Choose a category…</option>
+              {EXPENSE_CATEGORIES.filter((c) => form.id ? true : !budgetForCategory(c)).map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Monthly limit</label>
+            <input type="number" className="kb-input" value={form.monthlyLimit || ''} onChange={(e) => setField('monthlyLimit', e.target.value)} placeholder="20000" />
+          </div>
+          <button className="btn btn-primary" onClick={submitBudget}>Save budget</button>
         </Modal>
       )}
       {modal === 'planMemberLoan' && (
