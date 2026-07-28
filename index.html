@@ -45,6 +45,9 @@ const {
 /* ============================== helpers ============================== */
 const uid = () => Math.random().toString(36).slice(2, 10);
 const todayISO = () => new Date().toISOString().slice(0, 10);
+// Builds a wa.me link from any phone string (handles spaces, +, etc.) — used by the
+// developer/support contact buttons.
+const waLink = (phone, text) => `https://wa.me/${(phone || '').replace(/\D/g, '')}${text ? '?text=' + encodeURIComponent(text) : ''}`;
 const dayMs = 86400000;
 
 // Pulls a single name + phone number from the device's own contact list, where supported
@@ -323,12 +326,15 @@ const THEME_PRESETS = [
 // account. Change this string to whatever key you want to require.
 const SIGNUP_ACCESS_KEY = '12345678';
 const DEMO_EMAIL = 'demo@pocketledger.ng';
-// Shown on the "Contact developer" link on the sign-up screen — edit with your own details.
+// Shown on the "Contact developer" link on the sign-up screen, and in Settings — edit with your own details.
 const DEVELOPER_CONTACT = {
-  name: 'PocketLedger Support',
-  email: 'developer@pocketledger.ng',
-  phone: '+234 800 000 0000',
-  note: 'Reach out here for your account access key or any setup help.',
+  company: 'VersaX CS Global Services',
+  developer: 'Morris Okereke',
+  email: 'info.versax@gmail.com',
+  phone: '+234 813 795 2242',
+  support: '9642608094',
+  bank: 'Providus Bank',
+  note: 'Need help signing up, or spotted an issue? Reach out directly.',
 };
 
 /* ============================== persistence (localStorage) ============================== */
@@ -450,6 +456,41 @@ function Modal({ title, onClose, children }) {
           <button className="icon-btn" onClick={onClose}><X size={18} /></button>
         </div>
         <div className="modal-body">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+// Self-styled so it renders correctly wherever it's used — the sign-up screen
+// (before the main stylesheet loads) or inside Settings (after login).
+function ContactDeveloperCard() {
+  const c = DEVELOPER_CONTACT;
+  const cleanPhone = (c.phone || '').replace(/[^\d+]/g, '');
+  return (
+    <div className="contact-dev-card">
+      <style>{`
+        .contact-dev-card{background:#151E33;border-radius:14px;padding:20px 22px;color:#F7F3EA;font-family:'IBM Plex Sans',sans-serif;}
+        .contact-dev-title{font-family:'Fraunces',serif;font-size:18px;font-weight:600;margin-bottom:6px;}
+        .contact-dev-sub{font-size:12.5px;color:rgba(247,243,234,0.65);margin-bottom:16px;line-height:1.5;}
+        .contact-dev-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;}
+        .contact-dev-btn{display:inline-flex;align-items:center;gap:6px;border-radius:8px;padding:9px 14px;font-size:12.5px;font-weight:600;cursor:pointer;text-decoration:none;border:1px solid rgba(247,243,234,0.25);color:#F7F3EA;background:none;}
+        .contact-dev-btn:hover{border-color:rgba(247,243,234,0.5);}
+        .contact-dev-btn-whatsapp{background:#25D366;border-color:#25D366;color:#0B2013;}
+        .contact-dev-btn-whatsapp:hover{background:#20bd5a;}
+        .contact-dev-foot{border-top:1px solid rgba(247,243,234,0.15);padding-top:12px;font-size:11.5px;color:rgba(247,243,234,0.62);line-height:1.8;}
+        .contact-dev-foot strong{color:#F7F3EA;font-weight:600;}
+      `}</style>
+      <div className="contact-dev-title">Contact the developer</div>
+      <div className="contact-dev-sub">{c.note}</div>
+      <div className="contact-dev-actions">
+        <a className="contact-dev-btn contact-dev-btn-whatsapp" href={waLink(c.phone)} target="_blank" rel="noreferrer"><MessageCircle size={14} /> WhatsApp</a>
+        <a className="contact-dev-btn" href={`tel:${cleanPhone}`}><Phone size={14} /> Call</a>
+        <a className="contact-dev-btn" href={`mailto:${c.email}`}><Mail size={14} /> Email</a>
+      </div>
+      <div className="contact-dev-foot">
+        <strong>{c.company}</strong> — developed by {c.developer}<br />
+        {c.email} · {c.phone}<br />
+        Support: {c.support} · Bank: {c.bank}
       </div>
     </div>
   );
@@ -783,14 +824,8 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
         .auth-field-hint{font-size:11px;color:#8B8578;margin-top:5px;line-height:1.4;}
         .auth-contact-link{display:block;text-align:center;background:none;border:none;color:#2F4B7C;font-weight:600;font-size:12.5px;cursor:pointer;margin:14px auto 0;padding:0;}
         .auth-contact-backdrop{position:fixed;inset:0;background:rgba(27,42,74,0.55);display:flex;align-items:center;justify-content:center;z-index:60;padding:20px;}
-        .auth-contact-card{width:100%;max-width:340px;background:#F7F3EA;border-radius:14px;padding:22px 22px 20px;box-shadow:0 20px 60px rgba(0,0,0,0.3);}
-        .auth-contact-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
-        .auth-contact-head h3{margin:0;font-family:'Fraunces',serif;font-size:17px;color:#1B2A4A;}
-        .auth-contact-close{background:none;border:none;cursor:pointer;color:#5B6478;}
-        .auth-contact-note{font-size:12.5px;color:#5B6478;margin-bottom:14px;line-height:1.5;}
-        .auth-contact-row{display:flex;align-items:center;gap:9px;font-size:13px;color:#1B2A4A;padding:8px 0;border-top:1px solid #E7E0CC;}
-        .auth-contact-row:first-of-type{border-top:none;}
-        .auth-contact-row strong{font-weight:600;}
+        .auth-contact-wrap{position:relative;width:100%;max-width:360px;}
+        .auth-contact-close{position:absolute;top:10px;right:10px;z-index:2;background:rgba(0,0,0,0.28);border:none;border-radius:7px;padding:5px;cursor:pointer;color:#F7F3EA;display:flex;}
       `}</style>
       <div className="auth-card">
         <div className="auth-logo">
@@ -849,14 +884,9 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
       </div>
       {showContact && (
         <div className="auth-contact-backdrop" onClick={() => setShowContact(false)}>
-          <div className="auth-contact-card" onClick={(e) => e.stopPropagation()}>
-            <div className="auth-contact-head">
-              <h3>Contact developer</h3>
-              <button className="auth-contact-close" onClick={() => setShowContact(false)}><X size={18} /></button>
-            </div>
-            <div className="auth-contact-note">{DEVELOPER_CONTACT.note}</div>
-            <div className="auth-contact-row"><Mail size={15} /> <strong>{DEVELOPER_CONTACT.email}</strong></div>
-            <div className="auth-contact-row"><Phone size={15} /> <strong>{DEVELOPER_CONTACT.phone}</strong></div>
+          <div className="auth-contact-wrap" onClick={(e) => e.stopPropagation()}>
+            <button className="auth-contact-close" onClick={() => setShowContact(false)}><X size={16} /></button>
+            <ContactDeveloperCard />
           </div>
         </div>
       )}
@@ -902,6 +932,8 @@ function WelcomeScreen({ settings, onStart }) {
     { title: 'Loan Tracking', icon: HandCoins, tone: 'steel', desc: 'Keep tabs on money you’ve lent and personal loans you’ve taken, with interest, due dates and reminders handled for you.' },
     { title: 'Payment Portal', icon: Wallet, tone: 'gold', desc: 'Bill clients with branded invoices, collect payments, and issue proper receipts — all shareable straight to WhatsApp.' },
     { title: 'Expense & Budgeting', icon: CreditCard, tone: 'brick', desc: 'Log every expense by category, set monthly budgets, and see where your money went.' },
+    { title: 'Your Data, Backed Up', icon: Landmark, tone: 'steel', desc: 'Everything is saved to this device automatically. Export a backup anytime from Settings, or move your ledger to another device in seconds.' },
+    { title: 'Support When You Need It', icon: MessageCircle, tone: 'gold', desc: 'Stuck, or need an access key to set up your own account? Reach the developer directly by WhatsApp, call or email from the sign-up screen or Settings.' },
   ];
   return (
     <div className="welcome-shell">
@@ -923,7 +955,7 @@ function WelcomeScreen({ settings, onStart }) {
         .welcome-brand .logo-mark{width:38px;height:38px;display:flex;align-items:center;justify-content:center;}
         .welcome-brand .logo-mark-img{width:100%;height:100%;object-fit:cover;border-radius:50%;}
         .welcome-brand .kb-title{font-size:18px;font-weight:600;color:#F7F3EA;}
-        .welcome-carousel-wrap{flex:1;width:100%;max-width:520px;display:flex;align-items:flex-end;justify-content:center;}
+        .welcome-carousel-wrap{flex:1;width:100%;max-width:520px;display:flex;align-items:center;justify-content:center;}
         .welcome-carousel-wrap .carousel{position:relative;display:flex;align-items:center;gap:14px;background:none;border:none;box-shadow:none;padding:0 30px 34px;margin-bottom:0;min-height:200px;}
         .welcome-carousel-wrap .carousel-slide{display:flex;flex-direction:column;align-items:flex-start;gap:10px;flex:1;}
         .welcome-carousel-wrap .carousel-icon{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:rgba(247,243,234,0.14);color:#F7F3EA;}
@@ -2696,6 +2728,10 @@ function App() {
         </div>
       </div>
 
+      <div className="panel" style={{ marginBottom: 16, padding: 0, overflow: 'hidden' }}>
+        <ContactDeveloperCard />
+      </div>
+
       <div className="two-col">
         <div className="panel">
           <div className="panel-title">Business & receipt details</div>
@@ -3016,7 +3052,7 @@ function App() {
         .welcome-brand{display:flex;align-items:center;gap:10px;align-self:flex-start;}
         .welcome-brand .logo-mark{width:38px;height:38px;}
         .welcome-brand .kb-title{font-size:18px;font-weight:600;color:#F7F3EA;}
-        .welcome-carousel-wrap{flex:1;width:100%;max-width:520px;display:flex;align-items:flex-end;justify-content:center;}
+        .welcome-carousel-wrap{flex:1;width:100%;max-width:520px;display:flex;align-items:center;justify-content:center;}
         .welcome-carousel-wrap .carousel{background:none;border:none;box-shadow:none;padding:0 30px 34px;margin-bottom:0;min-height:200px;}
         .welcome-carousel-wrap .carousel.tone-green,
         .welcome-carousel-wrap .carousel.tone-steel,
