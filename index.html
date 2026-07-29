@@ -924,6 +924,7 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
   const [showContact, setShowContact] = useState(false);
   const [fields, setFields] = useState({ name: '', businessName: '', email: '', password: '', accessKey: '' });
   const [fpBusy, setFpBusy] = useState(false);
+  const autoFpTried = useRef(false);
   const set = (k, v) => setFields((f) => ({ ...f, [k]: v }));
   const demoAvailable = users.some((u) => u.isDemo);
   const fingerprintAvailable = webauthnSupported() && users.some((u) => u.webauthnCredentialId);
@@ -935,6 +936,18 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
     if (!match) { flash('Fingerprint sign-in didn\u2019t match any account on this device.'); return; }
     onLogin(match);
   };
+
+  // As soon as the sign-in screen opens, prompt for a fingerprint automatically
+  // (if this device has one enrolled) so the person can unlock without touching
+  // the keyboard at all. Only tried once per screen visit — cancelling or failing
+  // just leaves the normal email/password form and the button below available.
+  useEffect(() => {
+    if (!autoFpTried.current && mode === 'login' && fingerprintAvailable) {
+      autoFpTried.current = true;
+      handleFingerprintLogin();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, fingerprintAvailable]);
 
   const submit = () => {
     if (mode === 'signup') {
@@ -2942,10 +2955,6 @@ function App() {
         </div>
       </div>
 
-      <div className="panel" style={{ marginBottom: 16, padding: 0, overflow: 'hidden' }}>
-        <ContactDeveloperCard />
-      </div>
-
       <div className="two-col">
         <div className="panel">
           <div className="panel-title">Business & receipt details</div>
@@ -3053,6 +3062,18 @@ function App() {
           ))}
           {plans.length === 0 && <span className="panel-sub">No thrift plans yet.</span>}
         </div>
+      </div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
+        <div className="panel-title">Session</div>
+        <div className="panel-sub" style={{ marginBottom: 12 }}>Signed in as <strong>{currentUser.email}</strong> on this device. Your data stays saved here — signing out just locks the app until you log back in.</div>
+        <div className="settings-actions">
+          <button className="btn btn-outline" onClick={handleLogout}><LogOut size={15} /> Sign out</button>
+        </div>
+      </div>
+
+      <div className="panel" style={{ marginTop: 16, padding: 0, overflow: 'hidden' }}>
+        <ContactDeveloperCard />
       </div>
     </>
   );
