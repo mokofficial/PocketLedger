@@ -540,6 +540,25 @@ function Modal({ title, onClose, children }) {
 function ContactDeveloperCard() {
   const c = DEVELOPER_CONTACT;
   const cleanPhone = (c.phone || '').replace(/[^\d+]/g, '');
+  const [copied, setCopied] = useState(false);
+  const copySupportNumber = async () => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(c.support);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = c.support;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch (err) {
+      console.warn('PocketLedger: could not copy support account number.', err);
+    }
+  };
   return (
     <div className="contact-dev-card">
       <style>{`
@@ -553,6 +572,9 @@ function ContactDeveloperCard() {
         .contact-dev-btn-whatsapp:hover{background:#20bd5a;}
         .contact-dev-foot{border-top:1px solid rgba(247,243,234,0.15);padding-top:12px;font-size:11.5px;color:rgba(247,243,234,0.62);line-height:1.8;}
         .contact-dev-foot strong{color:#F7F3EA;font-weight:600;}
+        .contact-dev-copy{display:inline-flex;align-items:center;gap:4px;background:none;border:none;cursor:pointer;color:rgba(247,243,234,0.8);font-family:inherit;font-size:11.5px;font-weight:600;padding:1px 6px;border-radius:5px;vertical-align:middle;}
+        .contact-dev-copy:hover{color:#F7F3EA;background:rgba(247,243,234,0.1);}
+        .contact-dev-copy-done{color:#8FD9B2;}
       `}</style>
       <div className="contact-dev-title">Contact the developer</div>
       <div className="contact-dev-sub">{c.note}</div>
@@ -564,7 +586,10 @@ function ContactDeveloperCard() {
       <div className="contact-dev-foot">
         <strong>{c.company}</strong> — developed by {c.developer}<br />
         {c.email} · {c.phone}<br />
-        Support: {c.support} · Bank: {c.bank}
+        Support: <strong>{c.support}</strong> · Bank: {c.bank}{' '}
+        <button type="button" className={`contact-dev-copy ${copied ? 'contact-dev-copy-done' : ''}`} onClick={copySupportNumber}>
+          {copied ? <><CheckCircle2 size={12} /> Copied</> : <><Copy size={12} /> Copy number</>}
+        </button>
       </div>
     </div>
   );
@@ -1134,15 +1159,21 @@ function WelcomeScreen({ settings, onStart }) {
         .btn-primary:hover{background:#28395e;}
         .welcome-shell{
           height:100vh; height:100dvh; width:100%; display:flex; flex-direction:column; align-items:center;
-          padding:32px 24px calc(28px + env(safe-area-inset-bottom)); overflow:hidden;
+          padding:32px 24px calc(28px + env(safe-area-inset-bottom)); overflow:hidden; position:relative;
           background:#1B2A4A; font-family:'IBM Plex Sans',sans-serif;
           background-image:radial-gradient(circle at 15% 12%, rgba(183,138,46,0.22), transparent 45%), radial-gradient(circle at 85% 88%, rgba(31,122,92,0.22), transparent 45%);
         }
-        .welcome-brand{display:flex;align-items:center;gap:10px;align-self:flex-start;}
+        .welcome-bg-decor{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none;}
+        .welcome-bg-decor .decor-icon{position:absolute;}
+        .welcome-bg-decor .decor-thrift{top:6%;left:-36px;width:150px;height:150px;color:rgba(31,122,92,0.4);transform:rotate(-14deg);}
+        .welcome-bg-decor .decor-loans{top:56%;right:-46px;width:180px;height:180px;color:rgba(122,148,201,0.35);transform:rotate(11deg);}
+        .welcome-bg-decor .decor-payment{bottom:-36px;left:6%;width:150px;height:150px;color:rgba(183,138,46,0.4);transform:rotate(9deg);}
+        .welcome-bg-decor .decor-spending{top:-24px;right:14%;width:110px;height:110px;color:rgba(214,120,97,0.35);transform:rotate(-9deg);}
+        .welcome-brand{display:flex;align-items:center;gap:10px;align-self:flex-start;position:relative;z-index:1;}
         .welcome-brand .logo-mark{width:38px;height:38px;display:flex;align-items:center;justify-content:center;}
         .welcome-brand .logo-mark-img{width:100%;height:100%;object-fit:cover;border-radius:50%;}
         .welcome-brand .kb-title{font-size:18px;font-weight:600;color:#F7F3EA;}
-        .welcome-carousel-wrap{flex:1;width:100%;max-width:520px;display:flex;align-items:center;justify-content:center;}
+        .welcome-carousel-wrap{flex:1;width:100%;max-width:520px;display:flex;align-items:center;justify-content:center;position:relative;z-index:1;}
         .welcome-carousel-wrap .carousel{position:relative;display:flex;align-items:center;gap:14px;background:none;border:none;box-shadow:none;padding:0 30px 34px;margin-bottom:0;min-height:200px;}
         .welcome-carousel-wrap .carousel-slide{display:flex;flex-direction:column;align-items:flex-start;gap:10px;flex:1;}
         .welcome-carousel-wrap .carousel-icon{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:rgba(247,243,234,0.14);color:#F7F3EA;}
@@ -1152,16 +1183,22 @@ function WelcomeScreen({ settings, onStart }) {
         .welcome-carousel-wrap .carousel-dots{position:absolute;bottom:10px;left:0;right:0;display:flex;justify-content:center;gap:6px;}
         .welcome-carousel-wrap .carousel-dot{width:6px;height:6px;border-radius:50%;border:none;cursor:pointer;padding:0;background:rgba(247,243,234,0.3);}
         .welcome-carousel-wrap .carousel-dot-active{background:#F7F3EA;width:16px;border-radius:3px;}
-        .welcome-start{width:100%;max-width:320px;justify-content:center;padding:14px 0;font-size:15px;flex-shrink:0;background:var(--gold);color:#1B2A4A;}
+        .welcome-start{width:100%;max-width:320px;justify-content:center;padding:14px 0;font-size:15px;flex-shrink:0;background:var(--gold);color:#1B2A4A;position:relative;z-index:1;}
         .welcome-start:hover{background:#c99a37;}
         .welcome-guide-link{
           display:flex;align-items:center;justify-content:center;gap:6px;width:100%;max-width:320px;
           margin-top:12px;background:none;border:none;color:rgba(247,243,234,0.82);font-size:12.5px;
-          font-weight:600;text-decoration:none;cursor:pointer;flex-shrink:0;
+          font-weight:600;text-decoration:none;cursor:pointer;flex-shrink:0;position:relative;z-index:1;
         }
         .welcome-guide-link:hover{color:#F7F3EA;}
         @media (max-width:900px){ .carousel{padding:18px 44px;} }
       `}</style>
+      <div className="welcome-bg-decor" aria-hidden="true">
+        <PiggyBank className="decor-icon decor-thrift" strokeWidth={1} />
+        <HandCoins className="decor-icon decor-loans" strokeWidth={1} />
+        <Wallet className="decor-icon decor-payment" strokeWidth={1} />
+        <CreditCard className="decor-icon decor-spending" strokeWidth={1} />
+      </div>
       <div className="welcome-brand">
         <div className="logo-mark">{settings.logoDataUrl ? <img src={settings.logoDataUrl} alt="logo" className="logo-mark-img" /> : <AppLogo size={22} invert />}</div>
         <div className="kb-title kb-display">{settings.businessName || 'PocketLedger'}</div>
