@@ -36,7 +36,8 @@ const {
   ArrowDownRight, Link2, Repeat, Phone, Settings: SettingsIcon, Download,
   Upload, Send, Receipt, Image: ImageIcon, Printer, MessageCircle,
   RotateCcw, Home, LogOut, Mail, MapPin, Building2, FileText, CreditCard,
-  UserPlus, Palette, Eye, EyeOff, LogIn, Wallet, ArrowRight, Edit3, Copy
+  UserPlus, Palette, Eye, EyeOff, LogIn, Wallet, ArrowRight, Edit3, Copy,
+  Fingerprint
 } = LucideReact;
 const {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
@@ -65,6 +66,79 @@ async function pickDeviceContact() {
     };
   } catch (err) {
     console.warn('PocketLedger: contact picker unavailable or cancelled.', err);
+    return null;
+  }
+}
+
+// Fingerprint / biometric sign-in, via the browser's own WebAuthn platform authenticator
+// (Touch ID, Windows Hello, Android fingerprint, etc). PocketLedger keeps everything on
+// this device already, so there's no server to verify against — this registers a
+// device-bound credential that the OS/browser itself will only unlock with a matching
+// fingerprint or face, and we treat a successful unlock as proof of identity on this device.
+const webauthnSupported = () => typeof window !== 'undefined' && !!window.PublicKeyCredential && !!(navigator.credentials && navigator.credentials.create);
+
+function bufToBase64url(buf) {
+  const bytes = new Uint8Array(buf);
+  let str = '';
+  for (let i = 0; i < bytes.byteLength; i++) str += String.fromCharCode(bytes[i]);
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function base64urlToBuf(b64url) {
+  const pad = (4 - (b64url.length % 4)) % 4;
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat(pad);
+  const str = atob(b64);
+  const bytes = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
+  return bytes.buffer;
+}
+function randomChallenge() {
+  const arr = new Uint8Array(32);
+  (window.crypto || window.msCrypto).getRandomValues(arr);
+  return arr;
+}
+// Enrolls this device's fingerprint/biometric sensor for a user. Returns the new
+// credential id (to store on the user record) or null if unsupported/cancelled/failed.
+async function registerFingerprintCredential(user) {
+  if (!webauthnSupported()) return null;
+  try {
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge: randomChallenge(),
+        rp: { name: 'PocketLedger' },
+        user: { id: new TextEncoder().encode(user.id), name: user.email, displayName: user.name },
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' },
+        timeout: 60000,
+        attestation: 'none',
+      },
+    });
+    return cred ? bufToBase64url(cred.rawId) : null;
+  } catch (err) {
+    console.warn('PocketLedger: fingerprint registration failed or was cancelled.', err);
+    return null;
+  }
+}
+// Prompts the device's fingerprint/biometric sensor and, on a match, returns the
+// corresponding user from the given list. Returns null if unsupported, cancelled,
+// no enrolled users, or no match.
+async function verifyFingerprintCredential(users) {
+  if (!webauthnSupported()) return null;
+  const enrolled = users.filter((u) => u.webauthnCredentialId);
+  if (!enrolled.length) return null;
+  try {
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: randomChallenge(),
+        allowCredentials: enrolled.map((u) => ({ type: 'public-key', id: base64urlToBuf(u.webauthnCredentialId) })),
+        userVerification: 'required',
+        timeout: 60000,
+      },
+    });
+    if (!assertion) return null;
+    const matchedId = bufToBase64url(assertion.rawId);
+    return enrolled.find((u) => u.webauthnCredentialId === matchedId) || null;
+  } catch (err) {
+    console.warn('PocketLedger: fingerprint sign-in failed or was cancelled.', err);
     return null;
   }
 }
@@ -748,6 +822,88 @@ function PaymentReceiptModal({ receiptDoc, client, invoice, settings, fmt, onClo
   );
 }
 
+function TabStatementModal({ tab, contact, settings, fmt, onClose, shareImageToWhatsApp }) {
+  const sortedEntries = [...(tab.entries || [])].sort((a, b) => new Date(a.date) - new Date(b.date));
+  let running = 0;
+  const rows = sortedEntries.map((e) => {
+    running += e.type === 'borrow' ? Number(e.amount || 0) : -Number(e.amount || 0);
+    return { ...e, running };
+  });
+  const totalBorrowed = tabEntryTotal(tab.entries, 'borrow');
+  const totalPaid = tabEntryTotal(tab.entries, 'payment');
+  const balance = tabBalance(tab);
+  const personName = contact ? contact.name : 'Unknown contact';
+  const personPhone = contact ? contact.phone : '';
+  const statementNo = tab.id.slice(0, 8).toUpperCase();
+  const issuedOn = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  const balanceLabel = balance > 0 ? `${personName} owes` : balance < 0 ? 'You owe' : 'Balance';
+
+  const waText = [
+    `*${settings.businessName}* — Transaction History`, '',
+    `Statement No: ${statementNo}`,
+    `For: ${personName}`,
+    `Total borrowed: ${fmt(totalBorrowed)}`,
+    `Total paid back: ${fmt(totalPaid)}`,
+    `${balanceLabel}: ${fmt(Math.abs(balance))}`,
+  ].join('\n');
+
+  const downloadImage = () => {
+    const node = document.getElementById('receipt-print-area');
+    if (!node || !window.html2canvas) return;
+    window.html2canvas(node, { backgroundColor: '#F7F3EA', scale: 2 }).then((canvas) => {
+      const url = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url; a.download = `statement-${statementNo}.png`; a.click();
+    });
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card receipt-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3 className="kb-display">Transaction History</h3>
+          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <div id="receipt-print-area" className="receipt-sheet">
+            <div className="receipt-brand kb-display">{settings.businessName}</div>
+            <div className="receipt-sub">IOU Statement — {personName}</div>
+            <div className="receipt-lines">
+              <div className="receipt-row"><span>Statement No.</span><span className="kb-mono">{statementNo}</span></div>
+              <div className="receipt-row"><span>Date issued</span><span className="kb-mono">{issuedOn}</span></div>
+              {personPhone && <div className="receipt-row"><span>Phone</span><span className="kb-mono">{personPhone}</span></div>}
+              {tab.note && <div className="receipt-row"><span>Note</span><span className="kb-mono">{tab.note}</span></div>}
+            </div>
+            <div className="receipt-divider" />
+            {rows.length === 0 ? (
+              <div className="panel-sub">No transactions recorded yet.</div>
+            ) : (
+              <div className="receipt-lines">
+                {rows.map((r) => (
+                  <div key={r.id} className="receipt-row">
+                    <span>{new Date(r.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} — {r.type === 'borrow' ? 'Borrowed' : 'Paid back'}{r.note ? ` (${r.note})` : ''}</span>
+                    <span className="kb-mono">{r.type === 'borrow' ? '+' : '−'}{fmt(r.amount)} · bal {fmt(Math.abs(r.running))}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="receipt-divider" />
+            <div className="receipt-row"><span>Total borrowed</span><span className="kb-mono">{fmt(totalBorrowed)}</span></div>
+            <div className="receipt-row"><span>Total paid back</span><span className="kb-mono">{fmt(totalPaid)}</span></div>
+            <div className="receipt-row" style={{ fontWeight: 700, fontSize: 15 }}><span>{balanceLabel}</span><span className="kb-mono">{fmt(Math.abs(balance))}</span></div>
+            <div className="receipt-footer">Issued {issuedOn}{settings.ownerName ? ` · ${settings.ownerName}` : ''}</div>
+          </div>
+          <div className="receipt-actions">
+            <button className="btn btn-outline btn-small" onClick={downloadImage}><ImageIcon size={14} /> Download image</button>
+            <button className="btn btn-outline btn-small" onClick={() => window.print()}><Printer size={14} /> Print / Save PDF</button>
+            <button className="btn btn-ghost btn-small" onClick={() => shareImageToWhatsApp(personPhone, waText, `statement-${statementNo}.png`)}><MessageCircle size={14} /> Share image on WhatsApp</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AppLogo({ size = 18, invert = false }) {
   const bg = invert ? 'var(--paper)' : 'var(--ink)';
   const bar = invert ? 'var(--ink)' : 'var(--paper)';
@@ -767,8 +923,18 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
   const [showPw, setShowPw] = useState(false);
   const [showContact, setShowContact] = useState(false);
   const [fields, setFields] = useState({ name: '', businessName: '', email: '', password: '', accessKey: '' });
+  const [fpBusy, setFpBusy] = useState(false);
   const set = (k, v) => setFields((f) => ({ ...f, [k]: v }));
   const demoAvailable = users.some((u) => u.isDemo);
+  const fingerprintAvailable = webauthnSupported() && users.some((u) => u.webauthnCredentialId);
+
+  const handleFingerprintLogin = async () => {
+    setFpBusy(true);
+    const match = await verifyFingerprintCredential(users);
+    setFpBusy(false);
+    if (!match) { flash('Fingerprint sign-in didn\u2019t match any account on this device.'); return; }
+    onLogin(match);
+  };
 
   const submit = () => {
     if (mode === 'signup') {
@@ -816,6 +982,9 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
         .auth-eye{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#5B6478;}
         .auth-submit{width:100%;background:#1B2A4A;color:#fff;border:none;border-radius:9px;padding:12px 0;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;margin-top:6px;}
         .auth-submit:hover{background:#28395e;}
+        .auth-fp-btn{width:100%;background:#fff;color:#1B2A4A;border:1.5px solid #E7E0CC;border-radius:9px;padding:11px 0;font-size:13.5px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;margin-top:10px;}
+        .auth-fp-btn:hover{border-color:#B78A2E;color:#B78A2E;}
+        .auth-fp-btn:disabled{opacity:0.6;cursor:default;}
         .auth-switch{text-align:center;font-size:12.5px;color:#5B6478;margin-top:16px;}
         .auth-switch button{background:none;border:none;color:#B78A2E;font-weight:600;cursor:pointer;padding:0;}
         .auth-hint{text-align:center;font-size:11.5px;color:#8B8578;margin-top:18px;}
@@ -864,6 +1033,11 @@ function AuthScreen({ users, onLogin, onSignup, flash }) {
         <button className="auth-submit" onClick={submit}>
           {mode === 'signup' ? <><UserPlus size={16} /> Create account</> : <><LogIn size={16} /> Log in</>}
         </button>
+        {mode === 'login' && fingerprintAvailable && (
+          <button type="button" className="auth-fp-btn" onClick={handleFingerprintLogin} disabled={fpBusy}>
+            <Fingerprint size={16} /> {fpBusy ? 'Waiting for fingerprint…' : 'Sign in with fingerprint'}
+          </button>
+        )}
         <div className="auth-switch">
           {mode === 'signup' ? (
             <>Already have an account? <button onClick={() => setMode('login')}>Log in</button></>
@@ -1082,6 +1256,8 @@ function App() {
   const setSettings = (updater) => { if (guardWrite()) return; setSettingsRaw(updater); };
   const [newLoginEmail, setNewLoginEmail] = useState('');
   const [newLoginPassword, setNewLoginPassword] = useState('');
+  const [fpSetupBusy, setFpSetupBusy] = useState(false);
+  const [tabStatementDoc, setTabStatementDoc] = useState(null);
   const [receipt, setReceipt] = useState(null);
   const [toast, setToast] = useState('');
   const importInputRef = useRef(null);
@@ -1407,6 +1583,23 @@ function App() {
     setNewLoginPassword('');
     flash('Password updated.');
   };
+  const enableFingerprint = async () => {
+    if (guardWrite()) return;
+    if (!webauthnSupported()) { flash('This device or browser doesn\u2019t support fingerprint / biometric sign-in.'); return; }
+    setFpSetupBusy(true);
+    const credentialId = await registerFingerprintCredential(currentUser);
+    setFpSetupBusy(false);
+    if (!credentialId) { flash('Could not set up fingerprint sign-in — try again, or check this device has a fingerprint or face sensor set up.'); return; }
+    setUsers((prev) => prev.map((u) => u.id === currentUser.id ? { ...u, webauthnCredentialId: credentialId } : u));
+    setCurrentUser((u) => ({ ...u, webauthnCredentialId: credentialId }));
+    flash('Fingerprint sign-in enabled on this device.');
+  };
+  const disableFingerprint = () => {
+    if (guardWrite()) return;
+    setUsers((prev) => prev.map((u) => u.id === currentUser.id ? { ...u, webauthnCredentialId: null } : u));
+    setCurrentUser((u) => ({ ...u, webauthnCredentialId: null }));
+    flash('Fingerprint sign-in turned off.');
+  };
 
   const submitNewClient = () => {
     if (guardWrite()) return;
@@ -1542,7 +1735,7 @@ function App() {
       setLoanContacts((c) => [...c, contact]);
       contactId = contact.id;
     }
-    if (!contactId) { flash('Pick or add the person for this tab.'); return; }
+    if (!contactId) { flash('Pick or add the person for this IOU.'); return; }
     const tab = { id: uid(), contactId, note: form.note || '', entries: [] };
     setLoanTabs((t) => [tab, ...t]);
     closeModal();
@@ -1551,7 +1744,7 @@ function App() {
   const addTabEntry = (tabId, entry) => {
     if (guardWrite()) return;
     setLoanTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, entries: [...t.entries, { id: uid(), ...entry }] } : t));
-    flash(entry.type === 'borrow' ? 'Borrowing added to the tab.' : 'Payment added to the tab.');
+    flash(entry.type === 'borrow' ? 'Borrowing added to the IOU.' : 'Payment added to the IOU.');
   };
   const updateTabEntry = (tabId, entryId, changes) => {
     if (guardWrite()) return;
@@ -1566,7 +1759,7 @@ function App() {
   };
   const deleteLoanTab = (tabId) => {
     if (guardWrite()) return;
-    if (!window.confirm('Delete this whole tab and its entries? This cannot be undone.')) return;
+    if (!window.confirm('Delete this whole IOU and its entries? This cannot be undone.')) return;
     setLoanTabs((prev) => prev.filter((t) => t.id !== tabId));
   };
   const loanContactById = (id) => loanContacts.find((c) => c.id === id);
@@ -1863,8 +2056,8 @@ function App() {
       <div className="stat-grid">
         <StatCard label="Owed to you (loans given)" value={fmt(totalOwedToMe)} icon={ArrowDownRight} tone="steel" sub={`${loansGiven.length} loan(s) recorded`} />
         <StatCard label="You owe (loans received)" value={fmt(totalIOwe)} icon={ArrowUpRight} tone="brick" sub={`${loansReceived.length} loan(s) recorded`} />
-        <StatCard label="Running tabs net balance" value={fmt(loanTabs.reduce((s, t) => s + tabBalance(t), 0))} icon={Repeat} tone="steel" sub={`${loanTabs.length} tab(s) open`} />
-        <StatCard label="Total loans on file" value={loansGiven.length + loansReceived.length + loanTabs.length} icon={HandCoins} tone="gold" sub="Given + received + tabs" />
+        <StatCard label="IOUs net balance" value={fmt(loanTabs.reduce((s, t) => s + tabBalance(t), 0))} icon={Repeat} tone="steel" sub={`${loanTabs.length} IOU(s) open`} />
+        <StatCard label="Total loans on file" value={loansGiven.length + loansReceived.length + loanTabs.length} icon={HandCoins} tone="gold" sub="Given + received + IOUs" />
         <StatCard label="Loan alerts" value={moduleAlerts(['Loans given', 'Loans received']).length} icon={AlertTriangle} tone="green" sub="Needs attention" />
       </div>
       <div className="two-col">
@@ -2341,16 +2534,16 @@ function App() {
     });
     return (
       <>
-        <SectionHeader eyebrow="Running tabs" title="Ongoing borrowing tabs"
-          action={<button className="btn btn-primary" onClick={() => openModal('newLoanTab', { contactMode: loanContacts.length ? 'existing' : 'new' })}><Plus size={16} /> New tab</button>} />
+        <SectionHeader eyebrow="IOUs" title="Running IOUs"
+          action={<button className="btn btn-primary" onClick={() => openModal('newLoanTab', { contactMode: loanContacts.length ? 'existing' : 'new' })}><Plus size={16} /> New IOU</button>} />
         <div className="field-hint" style={{ marginBottom: 14 }}>
-          A tab is for informal, back-and-forth borrowing with one person — money goes back and forth over time and the balance is just the running sum, rather than a single fixed loan with a due date.
+          An IOU is for informal, back-and-forth borrowing with one person — money goes back and forth over time and the balance is just the running sum, rather than a single fixed loan with a due date.
         </div>
         <div className="search-box loan-search">
           <Search size={14} />
           <input placeholder="Search by name…" value={loanTabSearch} onChange={(e) => setLoanTabSearch(e.target.value)} />
         </div>
-        {loanTabs.length === 0 ? <EmptyState text="No running tabs yet — start one for anyone you lend to or borrow from casually." /> : filtered.length === 0 ? <EmptyState text="No match found." /> : (
+        {loanTabs.length === 0 ? <EmptyState text="No IOUs yet — start one for anyone you lend to or borrow from casually." /> : filtered.length === 0 ? <EmptyState text="No match found." /> : (
           <div className="loan-list" style={{ marginTop: 14 }}>
             {filtered.map((t) => {
               const contact = loanContactById(t.contactId);
@@ -2376,6 +2569,7 @@ function App() {
                     </div>
                     <div className="loan-card-right">
                       <div className={`kb-mono outstanding ${balanceCls}`}><span>{balanceLabel}</span>{fmt(Math.abs(balance))}</div>
+                      <button className="icon-btn" title="Transaction history receipt" onClick={(e) => { e.stopPropagation(); setTabStatementDoc({ tab: t, contact }); }}><Receipt size={15} /></button>
                       <button className="icon-btn" onClick={(e) => { e.stopPropagation(); openModal('editLoanTab', { tabId: t.id, contactId: t.contactId, contactName: contact ? contact.name : '', contactPhone: contact ? contact.phone : '', note: t.note || '' }); }}><Edit3 size={15} /></button>
                       <button className="icon-btn" onClick={(e) => { e.stopPropagation(); deleteLoanTab(t.id); }}><Trash2 size={15} /></button>
                       <ChevronDown size={16} className={`chev ${isOpen ? 'chev-open' : ''}`} />
@@ -2384,7 +2578,10 @@ function App() {
                   {isOpen && (
                     <div className="loan-card-body">
                       {t.note && <div className="loan-note">“{t.note}”</div>}
-                      <div className="panel-title" style={{ fontSize: 13, marginTop: 12 }}>Transactions</div>
+                      <div className="panel-title" style={{ fontSize: 13, marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span>Transactions</span>
+                        <button className="btn btn-outline btn-small" onClick={() => setTabStatementDoc({ tab: t, contact })}><Receipt size={13} /> Statement</button>
+                      </div>
                       {sortedEntries.length === 0 ? <EmptyState text="No entries yet — add the first borrow or payment below." /> : (
                         <ul className="tab-entry-list">
                           {sortedEntries.map((e) => (
@@ -2726,6 +2923,23 @@ function App() {
             <button className="btn btn-outline btn-small" onClick={updateLoginPassword}>Update password</button>
           </div>
         </div>
+        <div className="field-row" style={{ marginTop: 4 }}>
+          <div className="field">
+            <label>Fingerprint sign-in (this device)</label>
+            <div className="panel-sub">
+              {currentUser.webauthnCredentialId
+                ? 'Enabled — unlock PocketLedger on this device with your fingerprint or face instead of typing your password.'
+                : 'Use this device\u2019s fingerprint or face sensor to sign in instead of typing your password. This only applies to this device.'}
+            </div>
+          </div>
+          <div className="field" style={{ flex: '0 0 auto', alignSelf: 'flex-end' }}>
+            {currentUser.webauthnCredentialId ? (
+              <button className="btn btn-outline btn-small" onClick={disableFingerprint}>Turn off</button>
+            ) : (
+              <button className="btn btn-outline btn-small" onClick={enableFingerprint} disabled={fpSetupBusy}><Fingerprint size={14} /> {fpSetupBusy ? 'Setting up…' : 'Enable fingerprint sign-in'}</button>
+            )}
+          </div>
+        </div>
       </div>
 
       <div className="panel" style={{ marginBottom: 16, padding: 0, overflow: 'hidden' }}>
@@ -2859,7 +3073,7 @@ function App() {
       { id: 'loansOverview', label: 'Overview', icon: LayoutDashboard },
       { id: 'loansGiven', label: 'Given', icon: HandCoins },
       { id: 'loansReceived', label: 'Received', icon: Landmark },
-      { id: 'loansTabs', label: 'Tabs', icon: Repeat },
+      { id: 'loansTabs', label: 'IOUs', icon: Repeat },
     ],
     payments: [
       { id: 'paymentsOverview', label: 'Overview', icon: LayoutDashboard },
@@ -3411,7 +3625,7 @@ function App() {
         </Modal>
       )}
       {modal === 'newLoanTab' && (
-        <Modal title="Start a new running tab" onClose={closeModal}>
+        <Modal title="Start a new IOU" onClose={closeModal}>
           <div className="field-hint" style={{ marginBottom: 4 }}>Pick someone you've already registered, or add a new person — no need to say up front whether they're a borrower or lender, that's decided entry by entry.</div>
           {loanContacts.length > 0 && (
             <div className="tab-entry-type-toggle">
@@ -3439,14 +3653,14 @@ function App() {
               </select>
             </div>
           )}
-          <div className="field"><label>What's this tab for? (optional)</label>
+          <div className="field"><label>What's this IOU for? (optional)</label>
             <input className="kb-input" value={form.note || ''} onChange={(e) => setField('note', e.target.value)} placeholder="e.g. Shop credit, casual borrowing" />
           </div>
-          <button className="btn btn-primary" onClick={submitNewLoanTab}>Create tab</button>
+          <button className="btn btn-primary" onClick={submitNewLoanTab}>Create IOU</button>
         </Modal>
       )}
       {modal === 'editLoanTab' && (
-        <Modal title="Edit tab" onClose={closeModal}>
+        <Modal title="Edit IOU" onClose={closeModal}>
           <button type="button" className="btn btn-small btn-outline" style={{ marginBottom: 4 }} onClick={() => importDeviceContact((c) => { setField('contactName', c.name || form.contactName || ''); setField('contactPhone', c.phone || form.contactPhone || ''); })}>
             <Phone size={13} /> Import from phone contacts
           </button>
@@ -3456,10 +3670,10 @@ function App() {
           <div className="field"><label>Phone number</label>
             <input className="kb-input" value={form.contactPhone || ''} onChange={(e) => setField('contactPhone', e.target.value)} placeholder="080…" />
           </div>
-          <div className="field"><label>What's this tab for? (optional)</label>
+          <div className="field"><label>What's this IOU for? (optional)</label>
             <input className="kb-input" value={form.note || ''} onChange={(e) => setField('note', e.target.value)} placeholder="e.g. Shop credit, casual borrowing" />
           </div>
-          <div className="field-hint" style={{ marginBottom: 4 }}>Renaming this person here updates them everywhere they're used, since the same contact can be shared across tabs.</div>
+          <div className="field-hint" style={{ marginBottom: 4 }}>Renaming this person here updates them everywhere they're used, since the same contact can be shared across IOUs.</div>
           <button className="btn btn-primary" onClick={submitEditLoanTab}>Save changes</button>
         </Modal>
       )}
@@ -3681,6 +3895,16 @@ function App() {
       )}
 
       {receipt && <ReceiptModal receipt={receipt} onClose={() => setReceipt(null)} fmt={fmt} settings={settings} memberById={memberById} planById={planById} shareToWhatsApp={shareToWhatsApp} shareImageToWhatsApp={shareImageToWhatsApp} />}
+      {tabStatementDoc && (
+        <TabStatementModal
+          tab={tabStatementDoc.tab}
+          contact={tabStatementDoc.contact}
+          settings={settings}
+          fmt={fmt}
+          onClose={() => setTabStatementDoc(null)}
+          shareImageToWhatsApp={shareImageToWhatsApp}
+        />
+      )}
       {invoiceDoc && (
         <InvoiceDocModal
           invoice={invoiceDoc}
