@@ -955,27 +955,88 @@ function TabStatementModal({ tab, contact, settings, fmt, onClose, shareImageToW
   );
 }
 
+// Each step optionally names a `module` and `tab` to navigate to before it is shown
+// (see the activeModule/activeTab sync effect in App), so the tour can walk all the
+// way into a section's individual screens and controls, not just point at the home
+// card. Steps with no `module` are shown on the home screen.
 const TOUR_STEPS = [
-  { target: 'home-card-thrift', title: 'Thrift', body: 'Run daily, weekly, monthly, rotating-cycle or savings-target plans, and track every contributor on a simple tap grid.' },
-  { target: 'home-card-loans', title: 'Loan Tracking', body: 'Keep tabs on money you\u2019ve lent out, personal loans you\u2019ve received, and informal running IOUs with running balances.' },
-  { target: 'home-card-payments', title: 'Payment Portal', body: 'Invoice your clients, issue receipts, and share both straight to WhatsApp or as a downloadable image.' },
-  { target: 'home-card-spending', title: 'Expense & Budgeting', body: 'Log expenses by category and set monthly budgets to see where your money is going.' },
-  { target: 'topbar-settings', title: 'Settings', body: 'Your business profile, theme colour, dark mode, backups, fingerprint sign-in and login details all live here.' },
+  // ---- Thrift ----
+  { target: 'home-card-thrift', title: 'Thrift', body: 'Run daily, weekly, monthly, rotating-cycle or savings-target plans, and track every contributor on a simple tap grid. Let\u2019s look inside.' },
+  { module: 'thrift', tab: 'thriftOverview', target: 'nav-thriftOverview', title: 'Thrift \u2014 Overview', body: 'A snapshot of everything thrift: total collected, cycles in progress, contributors, and anything that needs attention.' },
+  { module: 'thrift', tab: 'thriftOverview', target: 'thrift-chart', title: 'Collections chart', body: 'Contributions collected over the last 8 weeks, so you can spot a slow week early.' },
+  { module: 'thrift', tab: 'plans', target: 'nav-plans', title: 'Plans', body: 'Every thrift plan you run \u2014 daily, weekly, monthly, rotating-cycle or savings-target \u2014 lives here.' },
+  { module: 'thrift', tab: 'plans', target: 'plans-new', title: 'Start a new plan', body: 'Set up a new thrift plan: choose its type, amount, frequency and who\u2019s contributing.' },
+  { module: 'thrift', tab: 'plans', target: 'plans-grid', title: 'Switch between plans', body: 'Tap any plan card to open its tap grid below and manage that plan.' },
+  { module: 'thrift', tab: 'plans', target: 'plans-table', title: 'Tap grid', body: 'Tap a cell to mark a contributor\u2019s round as paid \u2014 tap again to undo. Scroll sideways if a plan has many rounds.' },
+  { module: 'thrift', tab: 'contributors', target: 'nav-contributors', title: 'Members', body: 'Every contributor across all your plans, with totals and full payment history.' },
+  { module: 'thrift', tab: 'contributors', target: 'contributors-new', title: 'Add a contributor', body: 'Add someone new here, then assign them to a plan from that plan\u2019s screen.' },
+
+  // ---- Loan Tracking ----
+  { target: 'home-card-loans', title: 'Loan Tracking', body: 'Keep tabs on money you\u2019ve lent out, personal loans you\u2019ve received, and informal running IOUs with running balances. Let\u2019s look inside.' },
+  { module: 'loans', tab: 'loansOverview', target: 'nav-loansOverview', title: 'Loans \u2014 Overview', body: 'What\u2019s owed to you, what you owe, and your open IOU balances, all at a glance.' },
+  { module: 'loans', tab: 'loansGiven', target: 'nav-loansGiven', title: 'Loans given', body: 'Money you\u2019ve lent to others, grouped by person, with repayment tracking and reminders.' },
+  { module: 'loans', tab: 'loansGiven', target: 'loans-given-new', title: 'Record a new loan', body: 'Log a loan you\u2019ve given out \u2014 principal, interest, due date and the borrower\u2019s details.' },
+  { module: 'loans', tab: 'loansReceived', target: 'nav-loansReceived', title: 'Loans received', body: 'Personal loans you\u2019ve taken on, so you never lose track of what you owe and when it\u2019s due.' },
+  { module: 'loans', tab: 'loansReceived', target: 'loans-received-new', title: 'Record a loan you took', body: 'Add a loan you\u2019ve received here to start tracking refunds against it.' },
+  { module: 'loans', tab: 'loansTabs', target: 'nav-loansTabs', title: 'IOUs', body: 'For informal, back-and-forth borrowing with one person \u2014 the balance is just the running sum over time.' },
+  { module: 'loans', tab: 'loansTabs', target: 'loans-tabs-new', title: 'Start an IOU', body: 'Start a running tab with someone \u2014 add borrow and payment entries any time from their card.' },
+
+  // ---- Payment Portal ----
+  { target: 'home-card-payments', title: 'Payment Portal', body: 'Invoice your clients, issue receipts, and share both straight to WhatsApp or as a downloadable image. Let\u2019s look inside.' },
+  { module: 'payments', tab: 'paymentsOverview', target: 'nav-paymentsOverview', title: 'Payments \u2014 Overview', body: 'Total invoiced, total received, outstanding balances and your client count, all in one place.' },
+  { module: 'payments', tab: 'clients', target: 'nav-clients', title: 'Clients', body: 'Everyone you invoice, with contact details and how much each one currently owes you.' },
+  { module: 'payments', tab: 'clients', target: 'clients-new', title: 'Add a client', body: 'Add a client\u2019s details here before creating their first invoice.' },
+  { module: 'payments', tab: 'invoices', target: 'nav-invoices', title: 'Invoices', body: 'Create, view and share invoices \u2014 each one turns into a receipt automatically once you mark it paid.' },
+  { module: 'payments', tab: 'invoices', target: 'invoices-new', title: 'Create an invoice', body: 'Build a new invoice with line items, then share it straight to WhatsApp or as an image.' },
+  { module: 'payments', tab: 'receipts', target: 'nav-receipts', title: 'Receipts', body: 'Every proof-of-payment you\u2019ve issued, whether generated from an invoice or created directly.' },
+  { module: 'payments', tab: 'receipts', target: 'receipts-new', title: 'Issue a receipt', body: 'Issue a standalone receipt for a payment that isn\u2019t tied to an invoice \u2014 like a walk-in customer.' },
+
+  // ---- Expense & Budgeting ----
+  { target: 'home-card-spending', title: 'Expense & Budgeting', body: 'Log expenses by category and set monthly budgets to see where your money is going. Let\u2019s look inside.' },
+  { module: 'spending', tab: 'spendingOverview', target: 'nav-spendingOverview', title: 'Spending \u2014 Overview', body: 'What you\u2019ve spent this month, your top category, and any budgets running over.' },
+  { module: 'spending', tab: 'expenses', target: 'nav-expenses', title: 'Expenses', body: 'Every expense you\u2019ve logged, filterable by category, with edit and delete on each row.' },
+  { module: 'spending', tab: 'expenses', target: 'expenses-new', title: 'Log an expense', body: 'Log a new expense here \u2014 category, amount, date and an optional note.' },
+  { module: 'spending', tab: 'budgets', target: 'nav-budgets', title: 'Budgets', body: 'Set a monthly limit per category and see at a glance whether you\u2019re over or under it.' },
+  { module: 'spending', tab: 'budgets', target: 'budgets-new', title: 'Set a budget', body: 'Set a monthly spending limit for any category to start tracking against it.' },
+
+  // ---- Settings ----
+  { target: 'topbar-settings', title: 'Settings', body: 'Your business profile, theme colour, dark mode, backups, fingerprint sign-in and login details all live here. Let\u2019s look inside.' },
+  { tab: 'settings', target: 'settings-login', title: 'Login & security', body: 'Update your sign-in email or password, or turn on fingerprint sign-in for this device.' },
+  { tab: 'settings', target: 'settings-business', title: 'Business details', body: 'Your business name and currency, used across Thrift, Payments and shared receipts.' },
+  { tab: 'settings', target: 'settings-theme', title: 'Theme colour', body: 'Pick an accent colour for buttons and headings, or switch on dark mode right beside it.' },
+  { tab: 'settings', target: 'settings-backup', title: 'Data & backups', body: 'Export a full backup any time, import one on a new device, or set backups to run automatically.' },
+  { tab: 'settings', target: 'settings-support', title: 'Need a hand?', body: 'Reach the developer directly by WhatsApp, call or email right from here.' },
 ];
 
 function TourOverlay({ step, onNext, onBack, onClose }) {
   const info = TOUR_STEPS[step];
   const [rect, setRect] = useState(null);
   const lastRef = useRef(null);
+  const scrolledRef = useRef(false);
   useEffect(() => {
     let raf = null;
     lastRef.current = null;
+    // Reset per step, so every new target gets its own one-time scroll-into-view
+    // check below rather than reusing the previous step's result.
+    scrolledRef.current = false;
     const measure = () => {
       // Re-queried fresh every time (never cached across steps or renders), so a
       // highlight can never carry over to the wrong element — if the target for
-      // this step isn't in the DOM (e.g. mid re-render after data changes), we
-      // simply show no box rather than a stale one from a previous step.
+      // this step isn't in the DOM (e.g. mid re-render after data changes, or the
+      // module/tab switch for this step hasn't painted yet), we simply show no
+      // box rather than a stale one from a previous step; the loop below picks it
+      // up automatically on a later frame once it appears.
       const el = document.querySelector(`[data-tour="${info.target}"]`);
+      // A target can be scrolled inside a clipped, scrollable panel (the tap
+      // grid, a long settings page, a member list, ...) and sit outside the
+      // visible area. Bring it into view once per step instead of leaving the
+      // highlight box clipped or off-screen.
+      if (el && !scrolledRef.current) {
+        scrolledRef.current = true;
+        const r0 = el.getBoundingClientRect();
+        const inView = r0.top >= 70 && r0.bottom <= window.innerHeight - 70 && r0.left >= 0 && r0.right <= window.innerWidth;
+        if (!inView) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+      }
       const r = el ? el.getBoundingClientRect() : null;
       const last = lastRef.current;
       const changed = (!!r) !== (!!last) || (r && last && (
@@ -1022,12 +1083,12 @@ function TourOverlay({ step, onNext, onBack, onClose }) {
   );
 }
 
-function AppLogo({ size = 18, invert = false }) {
+function AppLogo({ size = 18, invert = false, iconOnly = false }) {
   const bg = invert ? 'var(--paper)' : 'var(--ink)';
   const bar = invert ? 'var(--ink)' : 'var(--paper)';
   return (
     <svg width={size} height={size} viewBox="0 0 211.56 211.56" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
-      <rect x="0" y="0" width="211.56" height="211.56" rx="40.86" fill={bg} />
+      {!iconOnly && <rect x="0" y="0" width="211.56" height="211.56" rx="40.86" fill={bg} />}
       <rect x="70.62" y="73.63" width="70.32" height="10.64" rx="3" fill={bar} />
       <rect x="55.52" y="91.52" width="100.52" height="10.64" rx="3" fill={bar} />
       <rect x="70.62" y="109.4" width="45.06" height="10.64" rx="3" fill={bar} />
@@ -1263,6 +1324,14 @@ function WelcomeScreen({ settings, onStart }) {
         .welcome-bg-decor .decor-payment{bottom:-36px;left:6%;width:150px;height:150px;color:rgba(183,138,46,0.4);transform:rotate(9deg);}
         .welcome-bg-decor .decor-spending{top:-24px;right:14%;width:110px;height:110px;color:rgba(214,120,97,0.35);transform:rotate(-9deg);}
         .welcome-bg-decor .decor-logo{top:50%;left:50%;transform:translate(-50%,-50%) rotate(-6deg);opacity:0.09;}
+        .welcome-bg-decor .decor-sm-a{top:30%;left:10%;width:38px;height:38px;color:rgba(122,148,201,0.28);transform:rotate(10deg);}
+        .welcome-bg-decor .decor-sm-b{top:16%;right:8%;width:32px;height:32px;color:rgba(183,138,46,0.3);transform:rotate(-16deg);}
+        .welcome-bg-decor .decor-sm-c{bottom:22%;left:38%;width:28px;height:28px;color:rgba(31,122,92,0.3);transform:rotate(18deg);}
+        .welcome-bg-decor .decor-sm-d{bottom:6%;right:24%;width:42px;height:42px;color:rgba(166,67,45,0.26);transform:rotate(-10deg);}
+        .welcome-bg-decor .decor-sm-e{top:42%;left:2%;width:26px;height:26px;color:rgba(31,122,92,0.26);transform:rotate(-20deg);}
+        .welcome-bg-decor .decor-sm-f{top:8%;left:44%;width:24px;height:24px;color:rgba(183,138,46,0.26);transform:rotate(16deg);}
+        .welcome-bg-decor .decor-sm-g{bottom:34%;right:4%;width:34px;height:34px;color:rgba(122,148,201,0.24);transform:rotate(12deg);}
+        .welcome-bg-decor .decor-sm-h{top:66%;left:16%;width:24px;height:24px;color:rgba(214,120,97,0.28);transform:rotate(-14deg);}
         .welcome-brand{display:flex;align-items:center;gap:10px;align-self:flex-start;position:relative;z-index:1;}
         .welcome-brand .logo-mark{width:38px;height:38px;display:flex;align-items:center;justify-content:center;}
         .welcome-brand .logo-mark-img{width:100%;height:100%;object-fit:cover;border-radius:50%;}
@@ -1288,11 +1357,19 @@ function WelcomeScreen({ settings, onStart }) {
         @media (max-width:900px){ .carousel{padding:18px 44px;} }
       `}</style>
       <div className="welcome-bg-decor" aria-hidden="true">
-        <div className="decor-icon decor-logo"><AppLogo size={190} invert /></div>
+        <div className="decor-icon decor-logo"><AppLogo size={190} iconOnly /></div>
         <PiggyBank className="decor-icon decor-thrift" strokeWidth={1} />
         <HandCoins className="decor-icon decor-loans" strokeWidth={1} />
         <Wallet className="decor-icon decor-payment" strokeWidth={1} />
         <CreditCard className="decor-icon decor-spending" strokeWidth={1} />
+        <Landmark className="decor-icon decor-sm-a" strokeWidth={1} />
+        <Receipt className="decor-icon decor-sm-b" strokeWidth={1} />
+        <Repeat className="decor-icon decor-sm-c" strokeWidth={1} />
+        <Target className="decor-icon decor-sm-d" strokeWidth={1} />
+        <PiggyBank className="decor-icon decor-sm-e" strokeWidth={1} />
+        <Wallet className="decor-icon decor-sm-f" strokeWidth={1} />
+        <HandCoins className="decor-icon decor-sm-g" strokeWidth={1} />
+        <CreditCard className="decor-icon decor-sm-h" strokeWidth={1} />
       </div>
       <div className="welcome-brand">
         <div className="logo-mark">{settings.logoDataUrl ? <img src={settings.logoDataUrl} alt="logo" className="logo-mark-img" /> : <AppLogo size={22} invert />}</div>
@@ -1715,7 +1792,10 @@ function App() {
     setTourStep(0);
   };
   const startTour = () => { setActiveModule('home'); setActiveTab('home'); setTourStep(0); };
-  const tourNext = () => setTourStep((s) => (s >= TOUR_STEPS.length - 1 ? null : s + 1));
+  const tourNext = () => setTourStep((s) => {
+    if (s >= TOUR_STEPS.length - 1) { goHome(); return null; }
+    return s + 1;
+  });
   const tourBack = () => setTourStep((s) => Math.max(0, s - 1));
   const handleLogout = () => { setCurrentUser(null); setActiveModule('home'); setActiveTab('home'); };
   const updateLoginEmail = () => {
@@ -2171,7 +2251,7 @@ function App() {
         <StatCard label="Thrift alerts" value={moduleAlerts(['Thrift contributions']).length} icon={AlertTriangle} tone="gold" sub="Needs attention" />
       </div>
       <div className="two-col">
-        <div className="panel">
+        <div className="panel" data-tour="thrift-chart">
           <div className="panel-title">Contributions collected — last 8 weeks</div>
           <div style={{ width: '100%', height: 220 }}>
             <ResponsiveContainer>
@@ -2322,9 +2402,9 @@ function App() {
     return (
       <>
         <SectionHeader eyebrow="Personalised strategies" title="Thrift plans"
-          action={<button className="btn btn-primary" onClick={() => openModal('newPlan', { memberIds: [] })}><Plus size={16} /> New thrift plan</button>} />
+          action={<button className="btn btn-primary" data-tour="plans-new" onClick={() => openModal('newPlan', { memberIds: [] })}><Plus size={16} /> New thrift plan</button>} />
 
-        <div className="plan-card-grid">
+        <div className="plan-card-grid" data-tour="plans-grid">
           {plans.map((p) => {
             const total = planTotal(p.id);
             return (
@@ -2422,7 +2502,7 @@ function App() {
               </div>
             )}
 
-            <div className="grid-scroll">
+            <div className="grid-scroll" data-tour="plans-table">
               <table className="contrib-grid">
                 <thead>
                   <tr>
@@ -2489,7 +2569,7 @@ function App() {
     return (
       <>
         <SectionHeader eyebrow="Everyone in the book" title="Contributors"
-          action={<button className="btn btn-primary" onClick={() => openModal('newMember')}><Plus size={16} /> Add contributor</button>} />
+          action={<button className="btn btn-primary" data-tour="contributors-new" onClick={() => openModal('newMember')}><Plus size={16} /> Add contributor</button>} />
         <div className="master-detail">
           <div className="panel master-list">
             <div className="search-box">
@@ -2689,7 +2769,7 @@ function App() {
   const renderLoansGiven = () => (
     <>
       <SectionHeader eyebrow="Money out" title="Loans given to individuals"
-        action={<button className="btn btn-primary" onClick={() => openModal('newLoanGiven')}><Plus size={16} /> New loan</button>} />
+        action={<button className="btn btn-primary" data-tour="loans-given-new" onClick={() => openModal('newLoanGiven')}><Plus size={16} /> New loan</button>} />
       {renderLoanGroups(loansGiven, 'repayments', 'borrower', addRepayment, 'Record payment', 'No loans given out yet.', loanGivenSearch, setLoanGivenSearch)}
     </>
   );
@@ -2697,7 +2777,7 @@ function App() {
   const renderLoansReceived = () => (
     <>
       <SectionHeader eyebrow="Money in" title="Personal loans received"
-        action={<button className="btn btn-primary" onClick={() => openModal('newLoanReceived')}><Plus size={16} /> New loan</button>} />
+        action={<button className="btn btn-primary" data-tour="loans-received-new" onClick={() => openModal('newLoanReceived')}><Plus size={16} /> New loan</button>} />
       {renderLoanGroups(loansReceived, 'refunds', 'lender', addRefund, 'Record refund', 'No personal loans received yet.', loanReceivedSearch, setLoanReceivedSearch)}
     </>
   );
@@ -2710,7 +2790,7 @@ function App() {
     return (
       <>
         <SectionHeader eyebrow="IOUs" title="Running IOUs"
-          action={<button className="btn btn-primary" onClick={() => openModal('newLoanTab', { contactMode: loanContacts.length ? 'existing' : 'new' })}><Plus size={16} /> New IOU</button>} />
+          action={<button className="btn btn-primary" data-tour="loans-tabs-new" onClick={() => openModal('newLoanTab', { contactMode: loanContacts.length ? 'existing' : 'new' })}><Plus size={16} /> New IOU</button>} />
         <div className="field-hint" style={{ marginBottom: 14 }}>
           An IOU is for informal, back-and-forth borrowing with one person — money goes back and forth over time and the balance is just the running sum, rather than a single fixed loan with a due date.
         </div>
@@ -2798,7 +2878,7 @@ function App() {
     return (
       <>
         <SectionHeader eyebrow="Who you invoice" title="Clients"
-          action={<button className="btn btn-primary" onClick={() => openModal('newClient')}><Plus size={16} /> Add client</button>} />
+          action={<button className="btn btn-primary" data-tour="clients-new" onClick={() => openModal('newClient')}><Plus size={16} /> Add client</button>} />
         <div className="search-box loan-search">
           <Search size={14} />
           <input placeholder="Search clients…" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
@@ -2833,7 +2913,7 @@ function App() {
     return (
       <>
         <SectionHeader eyebrow="Bill your clients" title="Invoices"
-          action={<button className="btn btn-primary" onClick={() => openModal('newInvoice', { items: [{ id: uid(), desc: '', qty: 1, price: '' }], issueDate: todayISO() })}><Plus size={16} /> New invoice</button>} />
+          action={<button className="btn btn-primary" data-tour="invoices-new" onClick={() => openModal('newInvoice', { items: [{ id: uid(), desc: '', qty: 1, price: '' }], issueDate: todayISO() })}><Plus size={16} /> New invoice</button>} />
         <div className="search-box loan-search">
           <Search size={14} />
           <input placeholder="Search by client or invoice number…" value={invoiceSearch} onChange={(e) => setInvoiceSearch(e.target.value)} />
@@ -2884,7 +2964,7 @@ function App() {
     return (
       <>
         <SectionHeader eyebrow="Proof of payment" title="Receipts"
-          action={<button className="btn btn-primary" onClick={() => openModal('newReceipt', { date: todayISO() })}><Plus size={16} /> Issue receipt</button>} />
+          action={<button className="btn btn-primary" data-tour="receipts-new" onClick={() => openModal('newReceipt', { date: todayISO() })}><Plus size={16} /> Issue receipt</button>} />
         <div className="search-box loan-search">
           <Search size={14} />
           <input placeholder="Search by payer or receipt number…" value={receiptSearch} onChange={(e) => setReceiptSearch(e.target.value)} />
@@ -2974,7 +3054,7 @@ function App() {
     return (
       <>
         <SectionHeader eyebrow="Every expense" title="Expenses"
-          action={<button className="btn btn-primary" onClick={() => openModal('newExpense', { date: todayISO() })}><Plus size={16} /> Log expense</button>} />
+          action={<button className="btn btn-primary" data-tour="expenses-new" onClick={() => openModal('newExpense', { date: todayISO() })}><Plus size={16} /> Log expense</button>} />
         <div className="field-row" style={{ marginBottom: 14 }}>
           <select className="kb-input" value={expenseCategoryFilter} onChange={(e) => setExpenseCategoryFilter(e.target.value)}>
             <option value="All">All categories</option>
@@ -3011,7 +3091,7 @@ function App() {
     return (
       <>
         <SectionHeader eyebrow="Stay within limits" title="Monthly budgets"
-          action={<button className="btn btn-primary" onClick={() => openModal('setBudget', {})}><Plus size={16} /> Set a budget</button>} />
+          action={<button className="btn btn-primary" data-tour="budgets-new" onClick={() => openModal('setBudget', {})}><Plus size={16} /> Set a budget</button>} />
         {budgets.length === 0 ? <EmptyState text="No budgets set yet — set a monthly limit for a category to start tracking against it." /> : (
           <div className="loan-list">
             {budgets.map((b) => {
@@ -3079,7 +3159,7 @@ function App() {
     <>
       <SectionHeader eyebrow="Configure your ledger" title="Settings" />
 
-      <div className="panel" style={{ marginBottom: 16 }}>
+      <div className="panel" style={{ marginBottom: 16 }} data-tour="settings-login">
         <div className="panel-title">Login details</div>
         <div className="panel-sub" style={{ marginBottom: 12 }}>You're logged in as <strong>{currentUser.email}</strong>. Change your email or password below.</div>
         <div className="field-row">
@@ -3118,7 +3198,7 @@ function App() {
       </div>
 
       <div className="two-col">
-        <div className="panel">
+        <div className="panel" data-tour="settings-business">
           <div className="panel-title">Business & receipt details</div>
           <div className="field"><label>Business / ledger name</label>
             <input className="kb-input" value={settings.businessName} onChange={(e) => setSettings((s) => ({ ...s, businessName: e.target.value }))} placeholder="Only needed for Payments & Thrift receipts" />
@@ -3138,7 +3218,7 @@ function App() {
           <div className="panel-sub">Used to normalise phone numbers (e.g. 0803… → {settings.countryCode}803…) when opening WhatsApp share links.</div>
         </div>
 
-        <div className="panel">
+        <div className="panel" data-tour="settings-theme">
           <div className="panel-title">Theme colour</div>
           <div className="panel-sub" style={{ marginBottom: 12 }}>Pick an accent colour for your sidebar, buttons and headings.</div>
           <div className="theme-swatch-row">
@@ -3214,7 +3294,7 @@ function App() {
         </div>
       </div>
 
-      <div className="panel" style={{ marginTop: 16 }}>
+      <div className="panel" style={{ marginTop: 16 }} data-tour="settings-backup">
         <div className="panel-title">Data & backups</div>
         <div className="panel-sub" style={{ marginBottom: 12 }}>Everything is saved automatically to this device's storage, so it's still here after you refresh, close the app, or install an update. Export a backup regularly to move data to another device or keep an extra copy.</div>
         <div className="settings-actions">
@@ -3279,7 +3359,7 @@ function App() {
         </div>
       </div>
 
-      <div className="panel" style={{ marginTop: 16, padding: 0, overflow: 'hidden' }}>
+      <div className="panel" style={{ marginTop: 16, padding: 0, overflow: 'hidden' }} data-tour="settings-support">
         <ContactDeveloperCard />
       </div>
     </>
@@ -3320,6 +3400,18 @@ function App() {
   const MODULE_ALERT_GROUPS = {
     thrift: ['Thrift contributions'], loans: ['Loans given', 'Loans received'], payments: ['Payments'], spending: [],
   };
+
+  // Drives the guided tour into each individual section instead of only pointing
+  // at the home cards: every time the tour step changes, jump the app to that
+  // step's module/tab first so TourOverlay's target can actually be on screen.
+  useEffect(() => {
+    if (tourStep === null) return;
+    const info = TOUR_STEPS[tourStep];
+    const mod = info.module || 'home';
+    setActiveModule(mod);
+    setActiveTab(info.tab || (mod === 'home' ? 'home' : MODULE_NAV[mod][0].id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourStep]);
 
   if (!preAuthWelcomeSeen) {
     return (
@@ -3723,7 +3815,7 @@ function App() {
           </div>
           <nav className="bottom-nav">
             {MODULE_NAV[activeModule].map((t) => (
-              <button key={t.id} className={`bottom-nav-item ${activeTab === t.id ? 'bottom-nav-item-active' : ''}`} onClick={() => setActiveTab(t.id)}>
+              <button key={t.id} data-tour={`nav-${t.id}`} className={`bottom-nav-item ${activeTab === t.id ? 'bottom-nav-item-active' : ''}`} onClick={() => setActiveTab(t.id)}>
                 <t.icon size={19} />
                 <span>{t.label}</span>
               </button>
@@ -3733,8 +3825,8 @@ function App() {
       )}
 
       {toast && <div className="toast">{toast}</div>}
-      {tourStep !== null && activeModule === 'home' && (
-        <TourOverlay step={tourStep} onNext={tourNext} onBack={tourBack} onClose={() => setTourStep(null)} />
+      {tourStep !== null && (
+        <TourOverlay step={tourStep} onNext={tourNext} onBack={tourBack} onClose={() => { setTourStep(null); goHome(); }} />
       )}
 
       {modal === 'newPlan' && (
