@@ -1,6 +1,6 @@
 {
   "id": "./",
-  "name": "PocketLedger — Thrift, Loans & Payments",
+  "name": "PocketLedger — Thrift, Loans, Payments, Expense Tracker & Tax",
   "short_name": "PocketLedger",
   "start_url": "./index.html",
   "scope": "./",
