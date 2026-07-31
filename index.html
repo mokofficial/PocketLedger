@@ -22,6 +22,7 @@
     --ink:#1B2A4A; --ink-soft:#5B6478; --paper:#F7F3EA; --paper-line:#E7E0CC;
     --green:#1F7A5C; --green-bg:#E3F1EA; --gold:#B78A2E; --gold-bg:#FBF3DF;
     --brick:#A6432D; --brick-bg:#F7E7E2; --steel:#2F4B7C; --steel-bg:#E7ECF4;
+    --navy:#4A3A8A; --navy-bg:#EAE6F5;
     --surface:#ffffff; --surface-2:#F3EFE3;
   }
 </style>
@@ -247,9 +248,23 @@ const CATEGORY_META = {
 function cyclePot(plan) { return Number(plan.amount || 0) * (plan.memberIds || []).length; }
 function cycleRoundsDone(plan) { return (plan.payouts || []).length; }
 function cycleComplete(plan) { return (plan.memberIds || []).length > 0 && cycleRoundsDone(plan) >= plan.memberIds.length; }
+// The order members receive their cycle payout in. Falls back to the order they were
+// added to the plan (memberIds) for plans with no custom order set yet. Any member no
+// longer on the plan is dropped, and any current member missing from the saved order
+// (just added) is appended at the end, so this always stays in sync with membership.
+function cyclePayoutOrder(plan) {
+  const saved = (plan.payoutOrder && plan.payoutOrder.length) ? plan.payoutOrder : (plan.memberIds || []);
+  const kept = saved.filter((id) => (plan.memberIds || []).includes(id));
+  const missing = (plan.memberIds || []).filter((id) => !kept.includes(id));
+  return [...kept, ...missing];
+}
 function cycleCurrentRecipientId(plan) {
   if (cycleComplete(plan)) return null;
-  return plan.memberIds[cycleRoundsDone(plan) % plan.memberIds.length];
+  // The next recipient is simply the earliest person in the order who hasn't been paid
+  // yet — not a fixed array index — so reordering upcoming turns never disturbs who has
+  // already been paid, however many times the order has since changed.
+  const paidIds = new Set((plan.payouts || []).map((p) => p.memberId));
+  return cyclePayoutOrder(plan).find((id) => !paidIds.has(id)) || null;
 }
 
 function shareNodeImageToWhatsApp(elementId, filename, waHref) {
@@ -420,6 +435,178 @@ const THEME_PRESETS = [
   { id: 'teal', label: 'Teal', color: '#0F5C63' },
 ];
 
+/* ============================== tax: rules, categories, parsing ============================== */
+// Nigeria Tax Act 2025 (effective 1 Jan 2026). Bands/rates/reliefs are current as of this
+// build — the law and NRS guidance can change, so treat computed figures as an estimate to
+// review, not a substitute for a qualified tax adviser or the official NRS filing portal.
+const PIT_BANDS = [
+  { upTo: 800000, rate: 0 },
+  { upTo: 3000000, rate: 0.15 },
+  { upTo: 12000000, rate: 0.18 },
+  { upTo: 25000000, rate: 0.21 },
+  { upTo: 50000000, rate: 0.23 },
+  { upTo: Infinity, rate: 0.25 },
+];
+function calcPIT(chargeableIncome) {
+  let remaining = Math.max(0, Number(chargeableIncome) || 0);
+  let lastCap = 0;
+  let total = 0;
+  const breakdown = [];
+  for (const band of PIT_BANDS) {
+    const width = band.upTo - lastCap;
+    const taxableInBand = Math.min(remaining, width);
+    if (taxableInBand > 0) {
+      const tax = taxableInBand * band.rate;
+      total += tax;
+      breakdown.push({ from: lastCap, to: band.upTo === Infinity ? null : band.upTo, rate: band.rate, amount: taxableInBand, tax });
+      remaining -= taxableInBand;
+    }
+    lastCap = band.upTo;
+    if (remaining <= 0) break;
+  }
+  return { total, breakdown };
+}
+function calcRentRelief(rentPaidAnnual) {
+  return Math.min(500000, 0.2 * (Number(rentPaidAnnual) || 0));
+}
+// Small companies (turnover ≤ ₦100m AND fixed assets ≤ ₦250m) are fully exempt from CIT,
+// CGT and the Development Levy. Standard rate is 30% CIT + 4% Development Levy on assessable profit.
+function calcCIT({ turnover, fixedAssets, assessableProfit }) {
+  const isSmall = (Number(turnover) || 0) <= 100000000 && (Number(fixedAssets) || 0) <= 250000000;
+  const profit = Math.max(0, Number(assessableProfit) || 0);
+  if (isSmall) return { isSmall: true, cit: 0, levy: 0, total: 0 };
+  const cit = profit * 0.30;
+  const levy = profit * 0.04;
+  return { isSmall: false, cit, levy, total: cit + levy };
+}
+
+const TAX_INCOME_CATEGORIES = ['Salary / Employment Income', 'Business / Trading Income', 'Rental Income', 'Investment / Interest Income', 'Other Income', 'Non-Taxable Transfer'];
+const TAX_DEDUCTION_CATEGORIES = ['Business Expense (deductible)', 'Rent Paid', 'Pension Contribution', 'NHF Contribution', 'Life Assurance Premium', 'Other Relief', 'Personal (non-deductible)'];
+const TAX_CATEGORIES = [...TAX_INCOME_CATEGORIES, ...TAX_DEDUCTION_CATEGORIES];
+
+// Best-effort guess only — always shown as editable so the person can correct it.
+function guessTaxCategory(description, amount) {
+  const d = (description || '').toLowerCase();
+  const isIn = Number(amount) >= 0;
+  if (/salary|payroll|wages/.test(d)) return 'Salary / Employment Income';
+  if (/rent/.test(d)) return isIn ? 'Rental Income' : 'Rent Paid';
+  if (/pension|pencom|rsa /.test(d)) return 'Pension Contribution';
+  if (/\bnhf\b|national housing/.test(d)) return 'NHF Contribution';
+  if (/assurance|life insurance|premium/.test(d)) return 'Life Assurance Premium';
+  if (/interest|dividend/.test(d)) return 'Investment / Interest Income';
+  if (/transfer to self|own account|internal transfer|float/.test(d)) return 'Non-Taxable Transfer';
+  if (isIn && /sales|invoice|payment received|pos |trf.*from/.test(d)) return 'Business / Trading Income';
+  if (!isIn && /supplier|inventory|stock|business/.test(d)) return 'Business Expense (deductible)';
+  return isIn ? 'Other Income' : 'Personal (non-deductible)';
+}
+
+// Splits a CSV/TSV/semicolon-delimited line respecting double-quoted fields.
+function splitDelimitedLine(line, delim) {
+  const out = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (ch === delim && !inQuotes) {
+      out.push(cur); cur = '';
+    } else cur += ch;
+  }
+  out.push(cur);
+  return out.map((s) => s.trim());
+}
+function parseMoneyString(raw) {
+  if (raw === undefined || raw === null) return NaN;
+  let s = String(raw).trim();
+  if (!s) return NaN;
+  let negative = false;
+  if (/^\(.*\)$/.test(s)) { negative = true; s = s.slice(1, -1); }
+  if (/^-/.test(s)) { negative = true; }
+  if (/^\+/.test(s)) { s = s.slice(1); }
+  s = s.replace(/[^\d.]/g, '');
+  if (!s) return NaN;
+  const n = parseFloat(s);
+  if (isNaN(n)) return NaN;
+  return negative ? -n : n;
+}
+function parseStatementDate(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  // dd/mm/yyyy or dd-mm-yyyy
+  let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (m) {
+    let [, d, mo, y] = m;
+    if (y.length === 2) y = '20' + y;
+    return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+  // yyyy-mm-dd already
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  return '';
+}
+const HEADER_SYNONYMS = {
+  date: ['date', 'transaction date', 'trans date', 'value date', 'posting date', 'txn date'],
+  description: ['description', 'narration', 'details', 'remarks', 'particulars', 'transaction details', 'memo', 'description/narration'],
+  debit: ['debit', 'withdrawal', 'money out', 'dr', 'debit amount', 'debit(₦)', 'debit (ngn)'],
+  credit: ['credit', 'deposit', 'money in', 'cr', 'credit amount', 'credit(₦)', 'credit (ngn)'],
+  amount: ['amount', 'transaction amount', 'value'],
+  type: ['type', 'transaction type', 'dr/cr', 'dr cr'],
+};
+function matchHeader(header) {
+  const h = header.toLowerCase().trim();
+  for (const key of Object.keys(HEADER_SYNONYMS)) {
+    if (HEADER_SYNONYMS[key].some((syn) => h === syn || h.includes(syn))) return key;
+  }
+  return null;
+}
+// Accepts CSV/TSV/semicolon-delimited text exported from any bank and normalises it into
+// { date, description, amount } rows, where amount is signed (+ credit / − debit). Handles
+// three common statement layouts: separate Debit & Credit columns, a single signed/typed
+// Amount column, or an Amount column paired with a Dr/Cr Type column.
+function parseBankStatementText(text) {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length < 2) return { rows: [], errors: ['File looks empty or has no data rows.'] };
+  const firstLine = lines[0];
+  const delim = (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length
+    ? ';' : (firstLine.includes('\t') ? '\t' : ',');
+  const headerCells = splitDelimitedLine(firstLine, delim);
+  const colMap = {};
+  headerCells.forEach((h, i) => { const key = matchHeader(h); if (key && !(key in colMap)) colMap[key] = i; });
+  if (colMap.date === undefined || colMap.description === undefined) {
+    return { rows: [], errors: ['Could not find Date and Description/Narration columns. Make sure the first row is a header row.'] };
+  }
+  const rows = [];
+  const errors = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cells = splitDelimitedLine(lines[i], delim);
+    if (cells.every((c) => !c)) continue;
+    const date = parseStatementDate(cells[colMap.date]);
+    const description = (cells[colMap.description] || '').trim();
+    let amount = NaN;
+    if (colMap.debit !== undefined || colMap.credit !== undefined) {
+      const debit = parseMoneyString(cells[colMap.debit]);
+      const credit = parseMoneyString(cells[colMap.credit]);
+      if (!isNaN(credit) && credit !== 0) amount = Math.abs(credit);
+      else if (!isNaN(debit) && debit !== 0) amount = -Math.abs(debit);
+      else amount = 0;
+    } else if (colMap.amount !== undefined) {
+      const raw = parseMoneyString(cells[colMap.amount]);
+      if (colMap.type !== undefined) {
+        const t = (cells[colMap.type] || '').toLowerCase();
+        amount = /dr|debit|out/.test(t) ? -Math.abs(raw) : Math.abs(raw);
+      } else {
+        amount = raw;
+      }
+    }
+    if (!date || !description || isNaN(amount)) { errors.push(`Row ${i + 1}: couldn't read this line, skipped.`); continue; }
+    rows.push({ date, description, amount });
+  }
+  return { rows, errors };
+}
+
 /* ============================== app configuration ============================== */
 // The demo account (below) is always view-only — no data it shows can be edited or saved.
 // This is the key someone must enter on the "Sign up" tab to create a real, writable
@@ -497,24 +684,41 @@ function SectionHeader({ eyebrow, title, action }) {
     </div>
   );
 }
+function SearchBox({ value, onChange, placeholder, className = '' }) {
+  return (
+    <div className={`search-box ${className}`}>
+      <Search size={14} />
+      <input placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)} />
+      {value && (
+        <button type="button" className="search-clear" onClick={() => onChange('')} title="Clear search" aria-label="Clear search">
+          <X size={13} />
+        </button>
+      )}
+    </div>
+  );
+}
 function AddPaymentRow({ label, onAdd }) {
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(todayISO());
+  const [error, setError] = useState('');
+  const submit = () => {
+    if (!amount || Number(amount) <= 0) { setError('Enter an amount greater than 0.'); return; }
+    onAdd(Number(amount), date);
+    setAmount(''); setError('');
+  };
   return (
-    <div className="add-payment-row">
-      <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="kb-input kb-mono" />
-      <input type="number" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)}
-        className="kb-input kb-mono" style={{ width: 130 }} />
-      <button
-        className="btn btn-small btn-primary"
-        onClick={() => {
-          if (!amount || Number(amount) <= 0) return;
-          onAdd(Number(amount), date);
-          setAmount('');
-        }}
-      >
-        <Plus size={14} /> {label}
-      </button>
+    <div className="add-payment-row-wrap">
+      <div className="add-payment-row">
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="kb-input kb-mono" />
+        <input type="number" min="0" inputMode="decimal" placeholder="Amount" value={amount}
+          onChange={(e) => { setAmount(e.target.value); if (error) setError(''); }}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+          className="kb-input kb-mono" style={{ width: 130 }} />
+        <button className="btn btn-small btn-primary" onClick={submit}>
+          <Plus size={14} /> {label}
+        </button>
+      </div>
+      {error && <div className="field-error">{error}</div>}
     </div>
   );
 }
@@ -523,10 +727,11 @@ function AddTabEntryRow({ onAdd }) {
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(todayISO());
   const [note, setNote] = useState('');
+  const [error, setError] = useState('');
   const submit = () => {
-    if (!amount || Number(amount) <= 0) return;
+    if (!amount || Number(amount) <= 0) { setError('Enter an amount greater than 0.'); return; }
     onAdd({ type, amount: Number(amount), date, note: note.trim() });
-    setAmount(''); setNote('');
+    setAmount(''); setNote(''); setError('');
   };
   return (
     <div className="add-tab-entry-row">
@@ -540,22 +745,47 @@ function AddTabEntryRow({ onAdd }) {
       </div>
       <div className="add-tab-entry-fields">
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="kb-input kb-mono" />
-        <input type="number" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)} className="kb-input kb-mono" style={{ width: 110 }} />
-        <input type="text" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} className="kb-input" style={{ flex: 1, minWidth: 0 }} />
+        <input type="number" min="0" inputMode="decimal" placeholder="Amount" value={amount}
+          onChange={(e) => { setAmount(e.target.value); if (error) setError(''); }}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+          className="kb-input kb-mono" style={{ width: 110 }} />
+        <input type="text" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+          className="kb-input" style={{ flex: 1, minWidth: 0 }} />
         <button className="btn btn-small btn-primary" onClick={submit}><Plus size={14} /> Add</button>
       </div>
+      {error && <div className="field-error">{error}</div>}
     </div>
   );
 }
+// Shared by every full-screen modal so Escape always closes whichever one is open.
+function useEscClose(onClose) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+}
 function Modal({ title, onClose, children }) {
+  useEscClose(onClose);
+  const bodyRef = useRef(null);
+  useEffect(() => {
+    // Move focus into the form as soon as it mounts, so keyboard users land
+    // straight in the first field instead of on the page behind the modal.
+    const t = setTimeout(() => {
+      const el = bodyRef.current && bodyRef.current.querySelector('input, select, textarea, button');
+      if (el) el.focus();
+    }, 30);
+    return () => clearTimeout(t);
+  }, []);
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3 className="kb-display">{title}</h3>
-          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+          <button className="icon-btn" onClick={onClose} title="Close" aria-label="Close"><X size={18} /></button>
         </div>
-        <div className="modal-body">{children}</div>
+        <div className="modal-body" ref={bodyRef}>{children}</div>
       </div>
     </div>
   );
@@ -622,6 +852,7 @@ function ContactDeveloperCard() {
 }
 
 function ReceiptModal({ receipt, onClose, fmt, settings, planById, memberById, shareToWhatsApp, shareImageToWhatsApp }) {
+  useEscClose(onClose);
   const isLoan = receipt.kind === 'loan';
   const isCycle = receipt.kind === 'cyclePayout';
   const receiptNo = isLoan ? receipt.payment.id.slice(0, 8).toUpperCase()
@@ -718,7 +949,7 @@ function ReceiptModal({ receipt, onClose, fmt, settings, planById, memberById, s
       <div className="modal-card receipt-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3 className="kb-display">{title}</h3>
-          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+          <button className="icon-btn" onClick={onClose} title="Close" aria-label="Close"><X size={18} /></button>
         </div>
         <div className="modal-body">
           <div id="receipt-print-area" className="receipt-sheet">
@@ -743,6 +974,7 @@ function ReceiptModal({ receipt, onClose, fmt, settings, planById, memberById, s
 }
 
 function InvoiceDocModal({ invoice, client, settings, fmt, onClose, onMarkPaid, shareToWhatsApp, shareImageToWhatsApp, message }) {
+  useEscClose(onClose);
   const status = invoiceStatusOf(invoice);
   const total = invoiceTotal(invoice);
   const issuedOn = new Date(invoice.issueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -763,7 +995,7 @@ function InvoiceDocModal({ invoice, client, settings, fmt, onClose, onMarkPaid, 
       <div className="modal-card receipt-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3 className="kb-display">Invoice {invoice.number}</h3>
-          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+          <button className="icon-btn" onClick={onClose} title="Close" aria-label="Close"><X size={18} /></button>
         </div>
         <div className="modal-body">
           <div className="receipt-sheet" id="receipt-print-area">
@@ -808,6 +1040,7 @@ function InvoiceDocModal({ invoice, client, settings, fmt, onClose, onMarkPaid, 
 }
 
 function PaymentReceiptModal({ receiptDoc, client, invoice, settings, fmt, onClose, shareToWhatsApp, shareImageToWhatsApp }) {
+  useEscClose(onClose);
   const payerName = client ? client.name : (receiptDoc.clientName || 'Walk-in customer');
   const payerPhone = client ? client.phone : '';
   const issuedOn = new Date(receiptDoc.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -837,7 +1070,7 @@ function PaymentReceiptModal({ receiptDoc, client, invoice, settings, fmt, onClo
       <div className="modal-card receipt-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3 className="kb-display">Receipt {receiptDoc.receiptNo}</h3>
-          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+          <button className="icon-btn" onClick={onClose} title="Close" aria-label="Close"><X size={18} /></button>
         </div>
         <div className="modal-body">
           <div id="receipt-print-area" className="receipt-sheet">
@@ -874,6 +1107,7 @@ function PaymentReceiptModal({ receiptDoc, client, invoice, settings, fmt, onClo
 }
 
 function TabStatementModal({ tab, contact, settings, fmt, onClose, shareImageToWhatsApp }) {
+  useEscClose(onClose);
   const sortedEntries = [...(tab.entries || [])].sort((a, b) => new Date(a.date) - new Date(b.date));
   let running = 0;
   const rows = sortedEntries.map((e) => {
@@ -913,7 +1147,7 @@ function TabStatementModal({ tab, contact, settings, fmt, onClose, shareImageToW
       <div className="modal-card receipt-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3 className="kb-display">Transaction History</h3>
-          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+          <button className="icon-btn" onClick={onClose} title="Close" aria-label="Close"><X size={18} /></button>
         </div>
         <div className="modal-body">
           <div id="receipt-print-area" className="receipt-sheet">
@@ -948,6 +1182,97 @@ function TabStatementModal({ tab, contact, settings, fmt, onClose, shareImageToW
             <button className="btn btn-outline btn-small" onClick={downloadImage}><ImageIcon size={14} /> Download image</button>
             <button className="btn btn-outline btn-small" onClick={() => window.print()}><Printer size={14} /> Print / Save PDF</button>
             <button className="btn btn-ghost btn-small" onClick={() => shareImageToWhatsApp(personPhone, waText, `statement-${statementNo}.png`)}><MessageCircle size={14} /> Share image on WhatsApp</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TaxReturnDocModal({ taxReturn, settings, fmt, onClose, onMarkFiled }) {
+  useEscClose(onClose);
+  const isIndividual = taxReturn.taxpayerType === 'individual';
+  const issuedOn = new Date(taxReturn.createdAt || Date.now()).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+
+  const downloadImage = () => {
+    const node = document.getElementById('receipt-print-area');
+    if (!node || !window.html2canvas) return;
+    window.html2canvas(node, { backgroundColor: '#F7F3EA', scale: 2 }).then((canvas) => {
+      const url = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url; a.download = `tax-return-${taxReturn.year}-${taxReturn.taxpayerName.replace(/\s+/g, '-')}.png`; a.click();
+    });
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card receipt-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3 className="kb-display">Tax Return — {taxReturn.year}</h3>
+          <button className="icon-btn" onClick={onClose} title="Close" aria-label="Close"><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <div id="receipt-print-area" className="receipt-sheet">
+            <div className="invoice-doc-head">
+              {settings.logoDataUrl && <img src={settings.logoDataUrl} alt="logo" className="invoice-logo" />}
+              <div>
+                <div className="receipt-brand">{settings.businessName}</div>
+                <div className="panel-sub">{isIndividual ? 'Personal Income Tax Return' : 'Companies Income Tax Return'} — Year {taxReturn.year}</div>
+              </div>
+            </div>
+            <div className="receipt-sub" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>{taxReturn.taxpayerName}{taxReturn.tin ? ` · TIN ${taxReturn.tin}` : ''}</span>
+              <Stamp status={taxReturn.status === 'filed' ? 'completed' : 'due-soon'} label={taxReturn.status === 'filed' ? 'Filed' : 'Draft'} />
+            </div>
+            <div className="receipt-divider" />
+            {isIndividual ? (
+              <div className="receipt-lines">
+                <div className="receipt-row"><span>Gross income</span><span className="kb-mono">{fmt(taxReturn.grossIncome)}</span></div>
+                <div className="receipt-row"><span>Pension contribution</span><span className="kb-mono">−{fmt(taxReturn.pension)}</span></div>
+                <div className="receipt-row"><span>NHF contribution</span><span className="kb-mono">−{fmt(taxReturn.nhf)}</span></div>
+                <div className="receipt-row"><span>Life assurance premium</span><span className="kb-mono">−{fmt(taxReturn.life)}</span></div>
+                <div className="receipt-row"><span>Rent relief (20% of rent, capped ₦500,000)</span><span className="kb-mono">−{fmt(taxReturn.rentRelief)}</span></div>
+                {taxReturn.otherReliefs > 0 && <div className="receipt-row"><span>Other reliefs</span><span className="kb-mono">−{fmt(taxReturn.otherReliefs)}</span></div>}
+                <div className="receipt-divider" />
+                <div className="receipt-row" style={{ fontWeight: 700 }}><span>Chargeable income</span><span className="kb-mono">{fmt(taxReturn.chargeableIncome)}</span></div>
+                <div className="receipt-divider" />
+                {(taxReturn.breakdown || []).map((b, i) => (
+                  <div key={i} className="receipt-row" style={{ fontSize: 11.5, color: 'var(--ink-soft)' }}>
+                    <span>{fmt(b.from)} – {b.to ? fmt(b.to) : 'above'} @ {Math.round(b.rate * 100)}%</span>
+                    <span className="kb-mono">{fmt(b.tax)}</span>
+                  </div>
+                ))}
+                <div className="receipt-divider" />
+                <div className="receipt-row" style={{ fontWeight: 700, fontSize: 15 }}><span>Total tax payable</span><span className="kb-mono">{fmt(taxReturn.taxPayable)}</span></div>
+              </div>
+            ) : (
+              <div className="receipt-lines">
+                <div className="receipt-row"><span>Annual turnover</span><span className="kb-mono">{fmt(taxReturn.turnover)}</span></div>
+                <div className="receipt-row"><span>Total fixed assets</span><span className="kb-mono">{fmt(taxReturn.fixedAssets)}</span></div>
+                <div className="receipt-row"><span>Allowable expenses</span><span className="kb-mono">−{fmt(taxReturn.allowableExpenses)}</span></div>
+                <div className="receipt-divider" />
+                <div className="receipt-row" style={{ fontWeight: 700 }}><span>Assessable profit</span><span className="kb-mono">{fmt(taxReturn.assessableProfit)}</span></div>
+                <div className="receipt-divider" />
+                {taxReturn.isSmallCompany ? (
+                  <div className="panel-sub">Small company (turnover ≤ ₦100,000,000 and fixed assets ≤ ₦250,000,000) — exempt from Companies Income Tax, Capital Gains Tax and the Development Levy.</div>
+                ) : (
+                  <>
+                    <div className="receipt-row"><span>Companies Income Tax (30%)</span><span className="kb-mono">{fmt(taxReturn.taxPayable)}</span></div>
+                    <div className="receipt-row"><span>Development Levy (4%)</span><span className="kb-mono">{fmt(taxReturn.developmentLevy)}</span></div>
+                  </>
+                )}
+                <div className="receipt-divider" />
+                <div className="receipt-row" style={{ fontWeight: 700, fontSize: 15 }}><span>Total payable</span><span className="kb-mono">{fmt(taxReturn.taxPayable + taxReturn.developmentLevy)}</span></div>
+              </div>
+            )}
+            <div className="receipt-footer">Computed {issuedOn} under the Nigeria Tax Act, 2025 (effective 1 January 2026). This is an estimate for filing preparation — confirm figures against your NRS assessment before submission.</div>
+          </div>
+          <div className="receipt-actions">
+            <button className="btn btn-outline btn-small" onClick={downloadImage}><ImageIcon size={14} /> Download image</button>
+            <button className="btn btn-outline btn-small" onClick={() => window.print()}><Printer size={14} /> Print / Save PDF</button>
+            {taxReturn.status !== 'filed' && (
+              <button className="btn btn-primary btn-small" onClick={() => onMarkFiled(taxReturn.id)}><CheckCircle2 size={14} /> Mark as filed</button>
+            )}
           </div>
         </div>
       </div>
@@ -1070,7 +1395,7 @@ function TourOverlay({ step, onNext, onBack, onClose }) {
       <div className="tour-card" style={{ top: cardTop, left: cardLeft }} onClick={(e) => e.stopPropagation()}>
         <div className="tour-card-head">
           <span className="tour-step-count">{step + 1} / {TOUR_STEPS.length}</span>
-          <button className="icon-btn" onClick={onClose}><X size={16} /></button>
+          <button className="icon-btn" onClick={onClose} title="Close" aria-label="Close"><X size={16} /></button>
         </div>
         <div className="tour-card-title kb-display">{info.title}</div>
         <div className="tour-card-body">{info.body}</div>
@@ -1392,6 +1717,7 @@ function HomeScreen({ user, stats, onPick }) {
     { id: 'loans', title: 'Loan Tracking', desc: 'Track money you’ve lent out and personal loans you’ve received, with reminders.', icon: HandCoins, tone: 'steel', stat: `${stats.loans} loan(s) on file` },
     { id: 'payments', title: 'Payment Portal', desc: 'Invoice clients, issue receipts, and send payment reminders for your business.', icon: Wallet, tone: 'gold', stat: `${stats.invoices} invoice(s)` },
     { id: 'spending', title: 'Expense & Budgeting', desc: 'Log personal or business expenses by category, set monthly budgets, and stay on top of both.', icon: CreditCard, tone: 'brick', stat: `${stats.expenses} expense(s) logged` },
+    { id: 'tax', title: 'Tax', desc: 'Import bank statements from any bank, consolidate them into one ledger, then calculate and file personal or company tax returns.', icon: Landmark, tone: 'navy', stat: `${stats.taxReturns} return(s) on file` },
   ];
   return (
     <>
@@ -1440,6 +1766,9 @@ function App() {
   const [clients, setClientsRaw] = useState(() => (PERSISTED && PERSISTED.clients) || seedClients());
   const [invoices, setInvoicesRaw] = useState(() => (PERSISTED && PERSISTED.invoices) || seedInvoices());
   const [receipts, setReceiptsRaw] = useState(() => (PERSISTED && PERSISTED.receipts) || seedReceipts());
+  const [taxTransactions, setTaxTransactionsRaw] = useState(() => (PERSISTED && PERSISTED.taxTransactions) || []);
+  const [taxImports, setTaxImportsRaw] = useState(() => (PERSISTED && PERSISTED.taxImports) || []);
+  const [taxReturns, setTaxReturnsRaw] = useState(() => (PERSISTED && PERSISTED.taxReturns) || []);
 
   // Guarded setters — every one of these is a no-op (with a flash message) while
   // browsing the read-only demo account. All existing call sites below keep using
@@ -1457,6 +1786,9 @@ function App() {
   const setClients = (updater) => { if (guardWrite()) return; setClientsRaw(updater); };
   const setInvoices = (updater) => { if (guardWrite()) return; setInvoicesRaw(updater); };
   const setReceipts = (updater) => { if (guardWrite()) return; setReceiptsRaw(updater); };
+  const setTaxTransactions = (updater) => { if (guardWrite()) return; setTaxTransactionsRaw(updater); };
+  const setTaxImports = (updater) => { if (guardWrite()) return; setTaxImportsRaw(updater); };
+  const setTaxReturns = (updater) => { if (guardWrite()) return; setTaxReturnsRaw(updater); };
   const [clientSearch, setClientSearch] = useState('');
   const [invoiceSearch, setInvoiceSearch] = useState('');
   const [receiptSearch, setReceiptSearch] = useState('');
@@ -1474,6 +1806,10 @@ function App() {
   const [loanTabSearch, setLoanTabSearch] = useState('');
   const [expandedTab, setExpandedTab] = useState(null);
   const [expenseCategoryFilter, setExpenseCategoryFilter] = useState('All');
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState('All');
+  const [expenseSort, setExpenseSort] = useState({ key: 'date', dir: 'desc' });
+  const [expenseShowCount, setExpenseShowCount] = useState(20);
+  const [memberHistoryShowCount, setMemberHistoryShowCount] = useState(12);
   const [settings, setSettingsRaw] = useState(() => (PERSISTED && PERSISTED.settings) || seedSettings());
   const setSettings = (updater) => { if (guardWrite()) return; setSettingsRaw(updater); };
   const [newLoginEmail, setNewLoginEmail] = useState('');
@@ -1483,6 +1819,12 @@ function App() {
   const [tabStatementDoc, setTabStatementDoc] = useState(null);
   const [receipt, setReceipt] = useState(null);
   const [toast, setToast] = useState('');
+  const [taxYearFilter, setTaxYearFilter] = useState(new Date().getFullYear());
+  const [taxSourceFilter, setTaxSourceFilter] = useState('All');
+  const [taxImportSourceName, setTaxImportSourceName] = useState('');
+  const [taxImportPreview, setTaxImportPreview] = useState(null);
+  const [taxReturnDoc, setTaxReturnDoc] = useState(null);
+  const taxFileInputRef = useRef(null);
   const importInputRef = useRef(null);
   const logoInputRef = useRef(null);
   const triggerLogoUpload = () => logoInputRef.current && logoInputRef.current.click();
@@ -1501,17 +1843,22 @@ function App() {
     const payload = {
       savedAt: new Date().toISOString(),
       users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, expenses, budgets,
-      clients, invoices, receipts, settings,
+      clients, invoices, receipts, settings, taxTransactions, taxImports, taxReturns,
     };
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch (err) {
       console.warn('PocketLedger: could not save data to this device.', err);
     }
-  }, [users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, expenses, budgets, clients, invoices, receipts, settings]);
+  }, [users, members, plans, contributions, loansGiven, loansReceived, loanContacts, loanTabs, expenses, budgets, clients, invoices, receipts, settings, taxTransactions, taxImports, taxReturns]);
 
   const fmt = (n) => settings.currencySymbol + Math.round(Number(n || 0)).toLocaleString('en-NG');
-  const flash = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
+  const toastTimerRef = useRef(null);
+  const flash = (msg) => {
+    setToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(''), 3200);
+  };
   const digitsOnly = (s) => (s || '').replace(/\D/g, '');
   const waHref = (phone, text) => {
     const digits = digitsOnly(phone);
@@ -1531,8 +1878,17 @@ function App() {
 
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({});
-  const openModal = (type, initial = {}) => { setModal(type); setForm(initial); };
-  const closeModal = () => { setModal(null); setForm({}); };
+  const modalInitialRef = useRef({});
+  const openModal = (type, initial = {}) => { setModal(type); setForm(initial); modalInitialRef.current = initial; };
+  // Used right after a save succeeds — no need to ask, the data is already safe.
+  const closeModalSilently = () => { setModal(null); setForm({}); };
+  // Used when the person dismisses the modal themselves (X, backdrop, Escape, back
+  // button) — warns if they'd lose typed input that was never saved.
+  const closeModal = () => {
+    const isDirty = modal && JSON.stringify(form) !== JSON.stringify(modalInitialRef.current);
+    if (isDirty && !window.confirm('Discard unsaved changes?')) return;
+    closeModalSilently();
+  };
   const setField = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   /* ---------- back button / swipe-back navigation ---------- */
@@ -1721,7 +2077,7 @@ function App() {
   /* ---------- submit handlers ---------- */
   const submitNewPlan = () => {
     if (guardWrite()) return;
-    if (!form.name || !form.amount) return;
+    if (!form.name || !form.amount) { flash('Enter a plan name and amount.'); return; }
     const category = form.category || 'Daily';
     if (category === 'Cycle' && (form.memberIds || []).length < 2) { flash('Pick at least 2 members for a rotating cycle plan.'); return; }
     const frequency = category === 'Cycle' ? (form.cycleFrequency || 'monthly')
@@ -1737,7 +2093,7 @@ function App() {
     };
     setPlans((p) => [...p, plan]);
     setSelectedPlanId(plan.id);
-    closeModal();
+    closeModalSilently();
   };
   const importDeviceContact = async (onFound) => {
     if (!contactPickerSupported()) { flash('Contact access isn’t supported on this browser/device — try Chrome on Android, or enter details manually.'); return; }
@@ -1747,15 +2103,17 @@ function App() {
   };
   const submitNewMember = () => {
     if (guardWrite()) return;
-    if (!form.name) return;
+    if (!form.name) { flash('Enter a name.'); return; }
+    const dup = members.some((m) => m.name.trim().toLowerCase() === form.name.trim().toLowerCase());
+    if (dup && !window.confirm(`A contributor named "${form.name.trim()}" already exists. Add another one anyway?`)) return;
     const member = { id: uid(), name: form.name, phone: form.phone || '' };
     setMembers((m) => [...m, member]);
     setSelectedMemberId(member.id);
-    closeModal();
+    closeModalSilently();
   };
   const submitNewLoanGiven = () => {
     if (guardWrite()) return;
-    if (!form.borrower || !form.principal) return;
+    if (!form.borrower || !form.principal) { flash('Enter a borrower name and principal amount.'); return; }
     const loan = {
       id: uid(), borrower: form.borrower, phone: form.phone || '', principal: Number(form.principal),
       interestRate: Number(form.interestRate || 0),
@@ -1763,11 +2121,11 @@ function App() {
       linkedPlanId: form.linkedPlanId || null, note: form.note || '', repayments: [],
     };
     setLoansGiven((l) => [loan, ...l]);
-    closeModal();
+    closeModalSilently();
   };
   const submitNewLoanReceived = () => {
     if (guardWrite()) return;
-    if (!form.lender || !form.principal) return;
+    if (!form.lender || !form.principal) { flash('Enter a lender name and principal amount.'); return; }
     const loan = {
       id: uid(), lender: form.lender, phone: form.phone || '', principal: Number(form.principal),
       interestRate: Number(form.interestRate || 0),
@@ -1775,7 +2133,7 @@ function App() {
       linkedPlanId: form.linkedPlanId || null, note: form.note || '', refunds: [],
     };
     setLoansReceived((l) => [loan, ...l]);
-    closeModal();
+    closeModalSilently();
   };
   const handleLogin = (user) => { setCurrentUser(user); setActiveModule('home'); setActiveTab('home'); flash(`Welcome back, ${user.name.split(' ')[0]}.`); };
   const handleSignup = (user) => {
@@ -1837,16 +2195,21 @@ function App() {
 
   const submitNewClient = () => {
     if (guardWrite()) return;
-    if (!form.name) return;
+    if (!form.name) { flash('Enter a client name.'); return; }
+    const dup = clients.some((c) => c.name.trim().toLowerCase() === form.name.trim().toLowerCase());
+    if (dup && !window.confirm(`A client named "${form.name.trim()}" already exists. Add another one anyway?`)) return;
     const client = { id: uid(), name: form.name, phone: form.phone || '', email: form.email || '', address: form.address || '' };
     setClients((c) => [...c, client]);
-    closeModal();
+    closeModalSilently();
     flash('Client added.');
   };
+  // Numbers are tracked against a persisted counter (settings.invoiceCounter), not just
+  // "highest number currently in the list" — otherwise deleting the newest invoice would
+  // free up its number and the next one created would collide with it.
   const nextInvoiceNumber = () => {
-    const nums = invoices.map((i) => Number((i.number || '').replace(/\D/g, '')) || 0);
-    const next = (nums.length ? Math.max(...nums) : 1000) + 1;
-    return `INV-${next}`;
+    const fromData = invoices.map((i) => Number((i.number || '').replace(/\D/g, '')) || 0);
+    const base = Math.max(settings.invoiceCounter || 1000, fromData.length ? Math.max(...fromData) : 1000);
+    return `INV-${base + 1}`;
   };
   const addInvoiceItem = () => setForm((f) => ({ ...f, items: [...(f.items || []), { id: uid(), desc: '', qty: 1, price: '' }] }));
   const updateInvoiceItem = (itemId, key, value) => setForm((f) => ({ ...f, items: (f.items || []).map((it) => it.id === itemId ? { ...it, [key]: value } : it) }));
@@ -1860,14 +2223,15 @@ function App() {
       items: form.items, status: 'sent', notes: form.notes || '', paidDate: null,
     };
     setInvoices((i) => [invoice, ...i]);
-    closeModal();
+    setSettings((s) => ({ ...s, invoiceCounter: Math.max(s.invoiceCounter || 1000, Number((invoice.number || '').replace(/\D/g, '')) || 0) }));
+    closeModalSilently();
     flash('Invoice created.');
     setInvoiceDoc(invoice);
   };
   const nextReceiptNumber = () => {
-    const nums = receipts.map((r) => Number((r.receiptNo || '').replace(/\D/g, '')) || 0);
-    const next = (nums.length ? Math.max(...nums) : 2000) + 1;
-    return `RCT-${next}`;
+    const fromData = receipts.map((r) => Number((r.receiptNo || '').replace(/\D/g, '')) || 0);
+    const base = Math.max(settings.receiptCounter || 2000, fromData.length ? Math.max(...fromData) : 2000);
+    return `RCT-${base + 1}`;
   };
   const markInvoicePaid = (invoiceId) => {
     if (guardWrite()) return;
@@ -1879,6 +2243,7 @@ function App() {
         clientName: '', amount: invoiceTotal(invoice), date: todayISO(), note: `Payment for invoice ${invoice.number}`,
       };
       setReceipts((r) => [rcpt, ...r]);
+      setSettings((s) => ({ ...s, receiptCounter: Math.max(s.receiptCounter || 2000, Number((rcpt.receiptNo || '').replace(/\D/g, '')) || 0) }));
     }
     flash('Invoice marked as paid — receipt generated.');
   };
@@ -1892,7 +2257,8 @@ function App() {
       amount: Number(form.amount), date: form.date || todayISO(), note: form.note || '',
     };
     setReceipts((r) => [rcpt, ...r]);
-    closeModal();
+    setSettings((s) => ({ ...s, receiptCounter: Math.max(s.receiptCounter || 2000, Number((rcpt.receiptNo || '').replace(/\D/g, '')) || 0) }));
+    closeModalSilently();
     flash('Receipt issued.');
     setPaymentReceiptDoc(rcpt);
   };
@@ -1905,6 +2271,61 @@ function App() {
     if (guardWrite()) return;
     if (!window.confirm('Delete this invoice? This cannot be undone.')) return;
     setInvoices((prev) => prev.filter((i) => i.id !== invoiceId));
+  };
+  const deletePlan = (planId) => {
+    if (guardWrite()) return;
+    const plan = planById(planId);
+    if (!plan) return;
+    if (!window.confirm(`Delete "${plan.name}"? This also removes its contribution history. This cannot be undone.`)) return;
+    setPlans((prev) => prev.filter((p) => p.id !== planId));
+    setContributions((prev) => prev.filter((c) => c.planId !== planId));
+    if (selectedPlanId === planId) {
+      const next = plans.find((p) => p.id !== planId);
+      setSelectedPlanId(next ? next.id : null);
+    }
+    flash('Plan deleted.');
+  };
+  const deleteMember = (memberId) => {
+    if (guardWrite()) return;
+    const member = memberById(memberId);
+    if (!member) return;
+    const onPlans = plans.filter((p) => p.memberIds.includes(memberId));
+    const alreadyPaidOnCycle = onPlans.filter((p) => p.category === 'Cycle' && !cycleComplete(p) && (p.payouts || []).some((po) => po.memberId === memberId));
+    let warning = onPlans.length ? ` They'll also be removed from ${onPlans.length} plan${onPlans.length > 1 ? 's' : ''} they're on.` : '';
+    if (alreadyPaidOnCycle.length) {
+      warning += ` Note: they already received a payout on "${alreadyPaidOnCycle[0].name}" — removing them shortens how many rounds that cycle needs to complete.`;
+    }
+    if (!window.confirm(`Delete ${member.name}? This also removes their contribution history.${warning} This cannot be undone.`)) return;
+    setMembers((prev) => prev.filter((m) => m.id !== memberId));
+    setContributions((prev) => prev.filter((c) => c.memberId !== memberId));
+    setPlans((prev) => prev.map((p) => ({ ...p, memberIds: p.memberIds.filter((id) => id !== memberId) })));
+    if (selectedMemberId === memberId) {
+      const next = members.find((m) => m.id !== memberId);
+      setSelectedMemberId(next ? next.id : null);
+    }
+    flash('Contributor deleted.');
+  };
+  const deleteClient = (clientId) => {
+    if (guardWrite()) return;
+    const client = clientById(clientId);
+    if (!client) return;
+    const clientInvoices = invoices.filter((i) => i.clientId === clientId);
+    const warning = clientInvoices.length ? ` They have ${clientInvoices.length} invoice(s) on file — those will stay, just no longer linked to a client.` : '';
+    if (!window.confirm(`Delete ${client.name}?${warning} This cannot be undone.`)) return;
+    setClients((prev) => prev.filter((c) => c.id !== clientId));
+    flash('Client deleted.');
+  };
+  const deleteLoanGiven = (loanId) => {
+    if (guardWrite()) return;
+    if (!window.confirm('Delete this loan record? This cannot be undone.')) return;
+    setLoansGiven((prev) => prev.filter((l) => l.id !== loanId));
+    flash('Loan record deleted.');
+  };
+  const deleteLoanReceived = (loanId) => {
+    if (guardWrite()) return;
+    if (!window.confirm('Delete this loan record? This cannot be undone.')) return;
+    setLoansReceived((prev) => prev.filter((l) => l.id !== loanId));
+    flash('Loan record deleted.');
   };
 
   const recordCyclePayout = (planId) => {
@@ -1936,6 +2357,22 @@ function App() {
     } : p));
     flash(`${plan.name} — new cycle started. Round 1 of ${plan.memberIds.length} begins today.`);
   };
+  // Moves a member up/down within the cycle's payout order (dir: -1 up, +1 down). Safe
+  // to call regardless of whether that member has already been paid — position among
+  // already-paid members has no effect, since cycleCurrentRecipientId always skips them.
+  const movePayoutOrder = (planId, memberId, dir) => {
+    if (guardWrite()) return;
+    setPlans((prev) => prev.map((p) => {
+      if (p.id !== planId) return p;
+      const order = cyclePayoutOrder(p);
+      const idx = order.indexOf(memberId);
+      const swapIdx = idx + dir;
+      if (idx < 0 || swapIdx < 0 || swapIdx >= order.length) return p;
+      const next = [...order];
+      [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
+      return { ...p, payoutOrder: next };
+    }));
+  };
   const addMemberToPlan = (planId, memberId) => {
     if (guardWrite()) return;
     if (!memberId) return;
@@ -1953,13 +2390,6 @@ function App() {
   };
 
   /* ---------- running-tab loans ---------- */
-  const submitNewLoanContact = () => {
-    if (guardWrite()) return null;
-    if (!form.name) return null;
-    const contact = { id: uid(), name: form.name, phone: form.phone || '' };
-    setLoanContacts((c) => [...c, contact]);
-    return contact;
-  };
   const submitNewLoanTab = () => {
     if (guardWrite()) return;
     let contactId = form.contactId;
@@ -1972,7 +2402,7 @@ function App() {
     if (!contactId) { flash('Pick or add the person for this IOU.'); return; }
     const tab = { id: uid(), contactId, note: form.note || '', entries: [] };
     setLoanTabs((t) => [tab, ...t]);
-    closeModal();
+    closeModalSilently();
     flash('Tab created — add entries as borrowing or payments happen.');
   };
   const addTabEntry = (tabId, entry) => {
@@ -2002,7 +2432,7 @@ function App() {
     if (!form.contactName) { flash('Enter a name for this person.'); return; }
     setLoanContacts((prev) => prev.map((c) => c.id === form.contactId ? { ...c, name: form.contactName, phone: form.contactPhone || '' } : c));
     setLoanTabs((prev) => prev.map((t) => t.id === form.tabId ? { ...t, note: form.note || '' } : t));
-    closeModal();
+    closeModalSilently();
     flash('Tab updated.');
   };
 
@@ -2012,14 +2442,14 @@ function App() {
     if (!form.amount || !form.category) { flash('Pick a category and enter an amount.'); return; }
     const expense = { id: uid(), category: form.category, amount: Number(form.amount), date: form.date || todayISO(), note: form.note || '' };
     setExpenses((prev) => [expense, ...prev]);
-    closeModal();
+    closeModalSilently();
     flash('Expense logged.');
   };
   const submitEditExpense = () => {
     if (guardWrite()) return;
     if (!form.amount || !form.category) { flash('Pick a category and enter an amount.'); return; }
     setExpenses((prev) => prev.map((e) => e.id === form.id ? { ...e, category: form.category, amount: Number(form.amount), date: form.date, note: form.note || '' } : e));
-    closeModal();
+    closeModalSilently();
     flash('Expense updated.');
   };
   const deleteExpense = (expenseId) => {
@@ -2036,13 +2466,145 @@ function App() {
       if (existing) return prev.map((b) => b.category === form.category ? { ...b, monthlyLimit: Number(form.monthlyLimit) } : b);
       return [...prev, { id: uid(), category: form.category, monthlyLimit: Number(form.monthlyLimit) }];
     });
-    closeModal();
+    closeModalSilently();
     flash('Budget saved.');
   };
   const deleteBudget = (budgetId) => {
     if (guardWrite()) return;
     if (!window.confirm('Remove this budget? This cannot be undone.')) return;
     setBudgets((prev) => prev.filter((b) => b.id !== budgetId));
+  };
+
+  /* ---------- Tax: import, consolidate, edit, calculate, file ---------- */
+  const triggerTaxImport = () => taxFileInputRef.current && taxFileInputRef.current.click();
+  const handleTaxFileSelected = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const { rows, errors } = parseBankStatementText(String(reader.result || ''));
+      setTaxImportPreview({ fileName: file.name, rows, errors });
+      if (rows.length === 0) flash('Could not read any transactions from that file — see the notes below.');
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+  const cancelTaxImportPreview = () => setTaxImportPreview(null);
+  const confirmTaxImport = () => {
+    if (guardWrite()) return;
+    if (!taxImportPreview || taxImportPreview.rows.length === 0) return;
+    const sourceName = taxImportSourceName.trim() || 'Bank statement';
+    const batchId = uid();
+    const newTxns = taxImportPreview.rows.map((r) => ({
+      id: uid(), batchId, date: r.date, description: r.description, amount: r.amount,
+      source: sourceName, category: guessTaxCategory(r.description, r.amount),
+    }));
+    setTaxTransactions((prev) => [...newTxns, ...prev]);
+    setTaxImports((prev) => [{ id: batchId, source: sourceName, fileName: taxImportPreview.fileName, count: newTxns.length, importedAt: new Date().toISOString() }, ...prev]);
+    flash(`Imported ${newTxns.length} transaction(s) from ${sourceName}.`);
+    setTaxImportPreview(null);
+    setTaxImportSourceName('');
+  };
+  const removeTaxImportBatch = (batchId) => {
+    if (guardWrite()) return;
+    if (!window.confirm('Remove this import batch and every transaction it added? This cannot be undone.')) return;
+    setTaxTransactions((prev) => prev.filter((t) => t.batchId !== batchId));
+    setTaxImports((prev) => prev.filter((b) => b.id !== batchId));
+  };
+  const updateTaxTxnCategory = (id, category) => {
+    if (guardWrite()) return;
+    setTaxTransactions((prev) => prev.map((t) => t.id === id ? { ...t, category } : t));
+  };
+  const deleteTaxTxn = (id) => {
+    if (guardWrite()) return;
+    if (!window.confirm('Delete this transaction? This cannot be undone.')) return;
+    setTaxTransactions((prev) => prev.filter((t) => t.id !== id));
+  };
+  const submitNewTaxTxn = () => {
+    if (guardWrite()) return;
+    if (!form.amount || !form.description || !form.category) { flash('Enter a description, amount and category.'); return; }
+    const signedAmount = Math.abs(Number(form.amount)) * (form.direction === 'out' ? -1 : 1);
+    const txn = { id: uid(), batchId: null, date: form.date || todayISO(), description: form.description, amount: signedAmount, source: form.source || 'Manual entry', category: form.category };
+    setTaxTransactions((prev) => [txn, ...prev]);
+    closeModalSilently();
+    flash('Transaction added.');
+  };
+  const submitEditTaxTxn = () => {
+    if (guardWrite()) return;
+    if (!form.amount || !form.description || !form.category) { flash('Enter a description, amount and category.'); return; }
+    const signedAmount = Math.abs(Number(form.amount)) * (form.direction === 'out' ? -1 : 1);
+    setTaxTransactions((prev) => prev.map((t) => t.id === form.id ? { ...t, date: form.date, description: form.description, amount: signedAmount, category: form.category, source: form.source } : t));
+    closeModalSilently();
+    flash('Transaction updated.');
+  };
+  const taxYearsAvailable = useMemo(() => {
+    const years = new Set(taxTransactions.map((t) => new Date(t.date).getFullYear()));
+    years.add(new Date().getFullYear());
+    return Array.from(years).sort((a, b) => b - a);
+  }, [taxTransactions]);
+  const taxSourcesAvailable = useMemo(() => Array.from(new Set(taxTransactions.map((t) => t.source))), [taxTransactions]);
+  const taxTxnsForYear = (year) => taxTransactions.filter((t) => new Date(t.date).getFullYear() === Number(year));
+  const sumTaxCategoryForYear = (year, category) => taxTxnsForYear(year).filter((t) => t.category === category).reduce((s, t) => s + Math.abs(Number(t.amount)), 0);
+  const sumTaxCategoriesForYear = (year, categories) => categories.reduce((s, c) => s + sumTaxCategoryForYear(year, c), 0);
+  const openNewTaxReturnModal = () => {
+    const year = taxYearFilter;
+    const grossIncome = sumTaxCategoriesForYear(year, TAX_INCOME_CATEGORIES.filter((c) => c !== 'Non-Taxable Transfer'));
+    const rentPaidAnnual = sumTaxCategoryForYear(year, 'Rent Paid');
+    const turnover = sumTaxCategoryForYear(year, 'Business / Trading Income');
+    const allowableExpenses = sumTaxCategoryForYear(year, 'Business Expense (deductible)');
+    openModal('newTaxReturn', {
+      year, taxpayerType: 'individual', taxpayerName: settings.ownerName || settings.businessName || '', tin: '',
+      grossIncome, pensionContribution: Math.round(grossIncome * 0.08), nhfContribution: Math.round(grossIncome * 0.025),
+      lifeAssurancePremium: sumTaxCategoryForYear(year, 'Life Assurance Premium'), rentPaidAnnual,
+      otherReliefs: sumTaxCategoryForYear(year, 'Other Relief'),
+      turnover, fixedAssets: '', allowableExpenses,
+    });
+  };
+  const submitTaxReturn = () => {
+    if (guardWrite()) return;
+    if (!form.taxpayerName) { flash('Enter the taxpayer name.'); return; }
+    const year = Number(form.year) || new Date().getFullYear();
+    const taxpayerType = form.taxpayerType || 'individual';
+    let result;
+    if (taxpayerType === 'individual') {
+      const grossIncome = Number(form.grossIncome || 0);
+      const pension = Number(form.pensionContribution || 0);
+      const nhf = Number(form.nhfContribution || 0);
+      const life = Math.min(100000, Number(form.lifeAssurancePremium || 0));
+      const rentRelief = calcRentRelief(form.rentPaidAnnual);
+      const otherReliefs = Number(form.otherReliefs || 0);
+      const totalReliefs = pension + nhf + life + rentRelief + otherReliefs;
+      const chargeableIncome = Math.max(0, grossIncome - totalReliefs);
+      const { total, breakdown } = calcPIT(chargeableIncome);
+      result = { grossIncome, pension, nhf, life, rentRelief, rentPaidAnnual: Number(form.rentPaidAnnual || 0), otherReliefs, chargeableIncome, taxPayable: total, developmentLevy: 0, breakdown };
+    } else {
+      const turnover = Number(form.turnover || 0);
+      const fixedAssets = Number(form.fixedAssets || 0);
+      const allowableExpenses = Number(form.allowableExpenses || 0);
+      const assessableProfit = Math.max(0, turnover - allowableExpenses);
+      const cit = calcCIT({ turnover, fixedAssets, assessableProfit });
+      result = { turnover, fixedAssets, allowableExpenses, assessableProfit, isSmallCompany: cit.isSmall, taxPayable: cit.cit, developmentLevy: cit.levy, breakdown: [] };
+    }
+    const existing = form.id ? taxReturns.find((r) => r.id === form.id) : null;
+    const record = {
+      id: form.id || uid(), year, taxpayerType, taxpayerName: form.taxpayerName, tin: form.tin || '',
+      ...result, status: existing ? existing.status : 'draft',
+      createdAt: existing ? existing.createdAt : new Date().toISOString(), filedAt: existing ? existing.filedAt : null,
+    };
+    setTaxReturns((prev) => form.id ? prev.map((r) => r.id === form.id ? record : r) : [record, ...prev]);
+    closeModalSilently();
+    flash(form.id ? 'Tax return updated.' : 'Tax return calculated.');
+  };
+  const markTaxReturnFiled = (id) => {
+    if (guardWrite()) return;
+    setTaxReturns((prev) => prev.map((r) => r.id === id ? { ...r, status: 'filed', filedAt: todayISO() } : r));
+    setTaxReturnDoc((d) => d && d.id === id ? { ...d, status: 'filed', filedAt: todayISO() } : d);
+    flash('Marked as filed.');
+  };
+  const deleteTaxReturn = (id) => {
+    if (guardWrite()) return;
+    if (!window.confirm('Delete this tax return? This cannot be undone.')) return;
+    setTaxReturns((prev) => prev.filter((r) => r.id !== id));
   };
 
   /* ---------- thrift member loans (from a plan's pool) ---------- */
@@ -2067,7 +2629,7 @@ function App() {
         : p));
       flash(`${fmt(amount)} recorded as a loan from ${plan ? plan.name : 'this plan'}'s pool for ${member ? member.name : 'the member'}.`);
     }
-    closeModal();
+    closeModalSilently();
   };
   const togglePlanMemberLoanRepaid = (planId, loanId) => {
     if (guardWrite()) return;
@@ -2119,7 +2681,8 @@ function App() {
     const header = ['Contributor', ...periods.map((p) => periodLabel(p, plan.frequency))].join(',');
     const rows = plan.memberIds.map((memberId) => {
       const cells = periods.map((period) => findContribution(plan.id, memberId, period) ? plan.amount : 0);
-      return [`"${memberById(memberId)?.name || ''}"`, ...cells].join(',');
+      const name = (memberById(memberId)?.name || '').replace(/"/g, '""');
+      return [`"${name}"`, ...cells].join(',');
     });
     const csv = [header, ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -2140,6 +2703,7 @@ function App() {
       try {
         const data = JSON.parse(reader.result);
         if (!data.members || !data.plans) throw new Error('Not a recognised PocketLedger backup file.');
+        if (!window.confirm('Import this backup? This replaces all current data on this device with what\'s in the file.')) { e.target.value = ''; return; }
         setMembers(data.members || []);
         setPlans(data.plans || []);
         setContributions(data.contributions || []);
@@ -2177,6 +2741,7 @@ function App() {
     setClients(seedClients());
     setInvoices(seedInvoices());
     setReceipts(seedReceipts());
+    setSettings((s) => { const { invoiceCounter, receiptCounter, ...rest } = s; return rest; });
     flash('Sample data restored.');
   };
   const clearAllData = () => {
@@ -2444,6 +3009,7 @@ function App() {
                     <HandCoins size={14} /> Member loan
                   </button>
                 )}
+                <button className="icon-btn" onClick={() => deletePlan(plan.id)} title="Delete plan" aria-label="Delete plan"><Trash2 size={15} /></button>
               </div>
             </div>
 
@@ -2499,6 +3065,38 @@ function App() {
                     ))}
                   </div>
                 )}
+                {!cycleComplete(plan) && plan.memberIds.length > 1 && (() => {
+                  const order = cyclePayoutOrder(plan);
+                  const paidIds = new Set((plan.payouts || []).map((p) => p.memberId));
+                  const nextId = cycleCurrentRecipientId(plan);
+                  return (
+                    <div className="payout-order">
+                      <div className="panel-sub" style={{ marginTop: 14, marginBottom: 6 }}>Payout order — use the arrows to change who's next</div>
+                      <ul className="payout-order-list">
+                        {order.map((memberId, i) => {
+                          const m = memberById(memberId);
+                          const isPaid = paidIds.has(memberId);
+                          const isNext = memberId === nextId;
+                          return (
+                            <li key={memberId} className={`payout-order-row ${isPaid ? 'payout-order-paid' : ''} ${isNext ? 'payout-order-next' : ''}`}>
+                              <span className="payout-order-pos kb-mono">{i + 1}</span>
+                              <span className="payout-order-name">{m ? m.name : 'Unknown'}</span>
+                              {isPaid ? <Stamp status="completed" label="Paid" /> : isNext ? <Stamp status="due-soon" label="Next up" /> : null}
+                              <div className="payout-order-actions">
+                                <button className="icon-btn" disabled={i === 0} onClick={() => movePayoutOrder(plan.id, memberId, -1)} title="Move up" aria-label="Move up">
+                                  <ChevronDown size={14} style={{ transform: 'rotate(180deg)' }} />
+                                </button>
+                                <button className="icon-btn" disabled={i === order.length - 1} onClick={() => movePayoutOrder(plan.id, memberId, 1)} title="Move down" aria-label="Move down">
+                                  <ChevronDown size={14} />
+                                </button>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
@@ -2548,7 +3146,7 @@ function App() {
                       <span className="tab-entry-date kb-mono">{new Date(ml.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
                       <div className="tab-entry-actions">
                         <button className="btn btn-small btn-ghost" onClick={() => togglePlanMemberLoanRepaid(plan.id, ml.id)}>{ml.repaid ? 'Repaid' : 'Mark repaid'}</button>
-                        <button className="icon-btn" onClick={() => deletePlanMemberLoan(plan.id, ml.id)}><Trash2 size={13} /></button>
+                        <button className="icon-btn" onClick={() => deletePlanMemberLoan(plan.id, ml.id)} title="Delete" aria-label="Delete"><Trash2 size={13} /></button>
                       </div>
                     </li>
                   ))}
@@ -2572,13 +3170,13 @@ function App() {
           action={<button className="btn btn-primary" data-tour="contributors-new" onClick={() => openModal('newMember')}><Plus size={16} /> Add contributor</button>} />
         <div className="master-detail">
           <div className="panel master-list">
-            <div className="search-box">
-              <Search size={14} />
-              <input placeholder="Search contributors…" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
-            </div>
+            <SearchBox placeholder="Search contributors…" value={memberSearch} onChange={setMemberSearch} />
+            {filtered.length === 0 ? (
+              <EmptyState text={members.length === 0 ? 'No contributors yet — add your first one.' : 'No contributors match your search.'} />
+            ) : (
             <ul className="member-list">
               {filtered.map((m) => (
-                <li key={m.id} className={m.id === selected?.id ? 'member-row-active' : ''} onClick={() => setSelectedMemberId(m.id)}>
+                <li key={m.id} className={m.id === selected?.id ? 'member-row-active' : ''} onClick={() => { setSelectedMemberId(m.id); setMemberHistoryShowCount(12); }}>
                   <div className="member-avatar kb-display">{m.name.charAt(0)}</div>
                   <div>
                     <div className="member-name">{m.name}</div>
@@ -2588,6 +3186,7 @@ function App() {
                 </li>
               ))}
             </ul>
+            )}
           </div>
 
           {selected && (
@@ -2601,6 +3200,7 @@ function App() {
                 <button className="btn btn-small btn-ghost" onClick={() => shareToWhatsApp(selected.phone, biodataMessage(selected))}>
                   <MessageCircle size={13} /> Share biodata
                 </button>
+                <button className="icon-btn" onClick={() => deleteMember(selected.id)} title="Delete contributor" aria-label="Delete contributor"><Trash2 size={15} /></button>
               </div>
               <div className="detail-stats">
                 <div><span className="kb-mono">{fmt(memberTotal(selected.id))}</span><label>Total contributed</label></div>
@@ -2613,19 +3213,26 @@ function App() {
               </div>
               <div className="panel-title" style={{ marginTop: 18 }}>Contribution history</div>
               {history.length === 0 ? <EmptyState text="No contributions recorded yet." /> : (
-                <table className="history-table">
-                  <thead><tr><th>Date</th><th>Plan</th><th>Amount</th><th></th></tr></thead>
-                  <tbody>
-                    {history.slice(0, 12).map((h) => (
-                      <tr key={h.id}>
-                        <td className="kb-mono">{new Date(h.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
-                        <td>{planById(h.planId)?.name}</td>
-                        <td className="kb-mono">{fmt(h.amount)}</td>
-                        <td><button className="link-btn receipt-link" onClick={() => setReceipt({ kind: 'contribution', member: selected, contribution: h })}><Receipt size={12} /> Receipt</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <>
+                  <table className="history-table">
+                    <thead><tr><th>Date</th><th>Plan</th><th>Amount</th><th></th></tr></thead>
+                    <tbody>
+                      {history.slice(0, memberHistoryShowCount).map((h) => (
+                        <tr key={h.id}>
+                          <td className="kb-mono">{new Date(h.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                          <td>{planById(h.planId)?.name}</td>
+                          <td className="kb-mono">{fmt(h.amount)}</td>
+                          <td><button className="link-btn receipt-link" onClick={() => setReceipt({ kind: 'contribution', member: selected, contribution: h })}><Receipt size={12} /> Receipt</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {history.length > memberHistoryShowCount && (
+                    <button className="btn btn-outline btn-small" style={{ marginTop: 10 }} onClick={() => setMemberHistoryShowCount((n) => n + 12)}>
+                      Load more ({history.length - memberHistoryShowCount} remaining)
+                    </button>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -2658,15 +3265,12 @@ function App() {
     return groups;
   };
 
-  const renderLoanGroups = (list, key, personField, addFn, addLabel, emptyText, search, setSearch) => {
+  const renderLoanGroups = (list, key, personField, addFn, addLabel, emptyText, search, setSearch, deleteFn) => {
     const dateField = personField === 'borrower' ? 'dateGiven' : 'dateReceived';
     const groups = groupLoans(list, personField, key).filter((g) => g.name.toLowerCase().includes(search.toLowerCase()));
     return (
       <>
-        <div className="search-box loan-search">
-          <Search size={14} />
-          <input placeholder="Search by name…" value={search} onChange={(e) => setSearch(e.target.value)} />
-        </div>
+        <SearchBox className="loan-search" placeholder="Search by name…" value={search} onChange={setSearch} />
         {list.length === 0 ? <EmptyState text={emptyText} /> : groups.length === 0 ? <EmptyState text="No match found." /> : (
           <div className="loan-groups">
             {groups.map((g) => (
@@ -2724,6 +3328,7 @@ function App() {
                                   <Send size={13} /> Send reminder
                                 </button>
                               )}
+                              <button className="btn btn-small btn-danger" onClick={() => deleteFn(l.id)}><Trash2 size={13} /> Delete</button>
                             </div>
                             <div className="panel-title" style={{ fontSize: 13, marginTop: 12 }}>Payment history</div>
                             {(l[key] || []).length === 0 ? <EmptyState text="No payments recorded yet." /> : (
@@ -2770,7 +3375,7 @@ function App() {
     <>
       <SectionHeader eyebrow="Money out" title="Loans given to individuals"
         action={<button className="btn btn-primary" data-tour="loans-given-new" onClick={() => openModal('newLoanGiven')}><Plus size={16} /> New loan</button>} />
-      {renderLoanGroups(loansGiven, 'repayments', 'borrower', addRepayment, 'Record payment', 'No loans given out yet.', loanGivenSearch, setLoanGivenSearch)}
+      {renderLoanGroups(loansGiven, 'repayments', 'borrower', addRepayment, 'Record payment', 'No loans given out yet.', loanGivenSearch, setLoanGivenSearch, deleteLoanGiven)}
     </>
   );
 
@@ -2778,7 +3383,7 @@ function App() {
     <>
       <SectionHeader eyebrow="Money in" title="Personal loans received"
         action={<button className="btn btn-primary" data-tour="loans-received-new" onClick={() => openModal('newLoanReceived')}><Plus size={16} /> New loan</button>} />
-      {renderLoanGroups(loansReceived, 'refunds', 'lender', addRefund, 'Record refund', 'No personal loans received yet.', loanReceivedSearch, setLoanReceivedSearch)}
+      {renderLoanGroups(loansReceived, 'refunds', 'lender', addRefund, 'Record refund', 'No personal loans received yet.', loanReceivedSearch, setLoanReceivedSearch, deleteLoanReceived)}
     </>
   );
 
@@ -2794,10 +3399,7 @@ function App() {
         <div className="field-hint" style={{ marginBottom: 14 }}>
           An IOU is for informal, back-and-forth borrowing with one person — money goes back and forth over time and the balance is just the running sum, rather than a single fixed loan with a due date.
         </div>
-        <div className="search-box loan-search">
-          <Search size={14} />
-          <input placeholder="Search by name…" value={loanTabSearch} onChange={(e) => setLoanTabSearch(e.target.value)} />
-        </div>
+        <SearchBox className="loan-search" placeholder="Search by name…" value={loanTabSearch} onChange={setLoanTabSearch} />
         {loanTabs.length === 0 ? <EmptyState text="No IOUs yet — start one for anyone you lend to or borrow from casually." /> : filtered.length === 0 ? <EmptyState text="No match found." /> : (
           <div className="loan-list" style={{ marginTop: 14 }}>
             {filtered.map((t) => {
@@ -2825,8 +3427,8 @@ function App() {
                     <div className="loan-card-right">
                       <div className={`kb-mono outstanding ${balanceCls}`}><span>{balanceLabel}</span>{fmt(Math.abs(balance))}</div>
                       <button className="icon-btn" title="Transaction history receipt" onClick={(e) => { e.stopPropagation(); setTabStatementDoc({ tab: t, contact }); }}><Receipt size={15} /></button>
-                      <button className="icon-btn" onClick={(e) => { e.stopPropagation(); openModal('editLoanTab', { tabId: t.id, contactId: t.contactId, contactName: contact ? contact.name : '', contactPhone: contact ? contact.phone : '', note: t.note || '' }); }}><Edit3 size={15} /></button>
-                      <button className="icon-btn" onClick={(e) => { e.stopPropagation(); deleteLoanTab(t.id); }}><Trash2 size={15} /></button>
+                      <button className="icon-btn" onClick={(e) => { e.stopPropagation(); openModal('editLoanTab', { tabId: t.id, contactId: t.contactId, contactName: contact ? contact.name : '', contactPhone: contact ? contact.phone : '', note: t.note || '' }); }} title="Edit" aria-label="Edit"><Edit3 size={15} /></button>
+                      <button className="icon-btn" onClick={(e) => { e.stopPropagation(); deleteLoanTab(t.id); }} title="Delete" aria-label="Delete"><Trash2 size={15} /></button>
                       <ChevronDown size={16} className={`chev ${isOpen ? 'chev-open' : ''}`} />
                     </div>
                   </div>
@@ -2846,8 +3448,8 @@ function App() {
                               <span className="tab-entry-note">{e.note || (e.type === 'borrow' ? 'Borrowed' : 'Paid back')}</span>
                               <span className="tab-entry-date kb-mono">{new Date(e.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
                               <div className="tab-entry-actions">
-                                <button className="icon-btn" onClick={() => openModal('editTabEntry', { tabId: t.id, entryId: e.id, type: e.type, amount: e.amount, date: e.date, note: e.note || '' })}><Edit3 size={13} /></button>
-                                <button className="icon-btn" onClick={() => deleteTabEntry(t.id, e.id)}><Trash2 size={13} /></button>
+                                <button className="icon-btn" onClick={() => openModal('editTabEntry', { tabId: t.id, entryId: e.id, type: e.type, amount: e.amount, date: e.date, note: e.note || '' })} title="Edit" aria-label="Edit"><Edit3 size={13} /></button>
+                                <button className="icon-btn" onClick={() => deleteTabEntry(t.id, e.id)} title="Delete" aria-label="Delete"><Trash2 size={13} /></button>
                               </div>
                             </li>
                           ))}
@@ -2868,7 +3470,7 @@ function App() {
   const renderHome = () => (
     <HomeScreen
       user={currentUser}
-      stats={{ plans: plans.length, loans: loansGiven.length + loansReceived.length + loanTabs.length, invoices: invoices.length, expenses: expenses.length }}
+      stats={{ plans: plans.length, loans: loansGiven.length + loansReceived.length + loanTabs.length, invoices: invoices.length, expenses: expenses.length, taxReturns: taxReturns.length }}
       onPick={openModule}
     />
   );
@@ -2879,18 +3481,18 @@ function App() {
       <>
         <SectionHeader eyebrow="Who you invoice" title="Clients"
           action={<button className="btn btn-primary" data-tour="clients-new" onClick={() => openModal('newClient')}><Plus size={16} /> Add client</button>} />
-        <div className="search-box loan-search">
-          <Search size={14} />
-          <input placeholder="Search clients…" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
-        </div>
-        {filtered.length === 0 ? <EmptyState text="No clients yet — add your first one." /> : (
+        <SearchBox className="loan-search" placeholder="Search clients…" value={clientSearch} onChange={setClientSearch} />
+        {filtered.length === 0 ? <EmptyState text={clients.length === 0 ? 'No clients yet — add your first one.' : 'No clients match your search.'} /> : (
           <div className="plan-card-grid">
             {filtered.map((c) => {
               const clientInvoices = invoices.filter((i) => i.clientId === c.id);
               const owed = clientInvoices.filter((i) => i.status !== 'paid').reduce((s, i) => s + invoiceTotal(i), 0);
               return (
                 <div key={c.id} className="plan-card client-card">
-                  <div className="plan-card-top"><span className="plan-card-name">{c.name}</span></div>
+                  <div className="plan-card-top">
+                    <span className="plan-card-name">{c.name}</span>
+                    <button className="icon-btn" onClick={() => deleteClient(c.id)} title="Delete client" aria-label="Delete client"><Trash2 size={14} /></button>
+                  </div>
                   <div className="plan-card-meta"><Phone size={12} style={{ verticalAlign: '-2px' }} /> {c.phone ? <a className="tel-link" href={`tel:${c.phone.replace(/[^0-9+]/g, '')}`} onClick={(e) => e.stopPropagation()}>{c.phone}</a> : 'No phone'}</div>
                   {c.email && <div className="plan-card-meta"><Mail size={12} style={{ verticalAlign: '-2px' }} /> {c.email}</div>}
                   {c.address && <div className="plan-card-meta"><MapPin size={12} style={{ verticalAlign: '-2px' }} /> {c.address}</div>}
@@ -2908,18 +3510,23 @@ function App() {
     const filtered = invoices.filter((i) => {
       const client = clientById(i.clientId);
       const name = (client ? client.name : '').toLowerCase();
-      return name.includes(invoiceSearch.toLowerCase()) || i.number.toLowerCase().includes(invoiceSearch.toLowerCase());
+      const matchesSearch = name.includes(invoiceSearch.toLowerCase()) || i.number.toLowerCase().includes(invoiceSearch.toLowerCase());
+      const matchesStatus = invoiceStatusFilter === 'All' || invoiceStatusOf(i) === invoiceStatusFilter;
+      return matchesSearch && matchesStatus;
     }).sort((a, b) => new Date(b.issueDate) - new Date(a.issueDate));
     return (
       <>
         <SectionHeader eyebrow="Bill your clients" title="Invoices"
           action={<button className="btn btn-primary" data-tour="invoices-new" onClick={() => openModal('newInvoice', { items: [{ id: uid(), desc: '', qty: 1, price: '' }], issueDate: todayISO() })}><Plus size={16} /> New invoice</button>} />
-        <div className="search-box loan-search">
-          <Search size={14} />
-          <input placeholder="Search by client or invoice number…" value={invoiceSearch} onChange={(e) => setInvoiceSearch(e.target.value)} />
+        <SearchBox className="loan-search" placeholder="Search by client or invoice number…" value={invoiceSearch} onChange={setInvoiceSearch} />
+        <div className="field-row" style={{ marginBottom: 14 }}>
+          <select className="kb-input" value={invoiceStatusFilter} onChange={(e) => setInvoiceStatusFilter(e.target.value)}>
+            <option value="All">All statuses</option>
+            {Object.entries(INVOICE_STATUS_LABEL).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+          </select>
         </div>
         {clients.length === 0 && <div className="panel-sub" style={{ marginBottom: 12 }}>Add a client first, then create an invoice for them.</div>}
-        {filtered.length === 0 ? <EmptyState text="No invoices yet." /> : (
+        {filtered.length === 0 ? <EmptyState text={invoices.length === 0 ? 'No invoices yet.' : 'No invoices match your filters.'} /> : (
           <div className="loan-list">
             {filtered.map((inv) => {
               const client = clientById(inv.clientId);
@@ -2965,11 +3572,8 @@ function App() {
       <>
         <SectionHeader eyebrow="Proof of payment" title="Receipts"
           action={<button className="btn btn-primary" data-tour="receipts-new" onClick={() => openModal('newReceipt', { date: todayISO() })}><Plus size={16} /> Issue receipt</button>} />
-        <div className="search-box loan-search">
-          <Search size={14} />
-          <input placeholder="Search by payer or receipt number…" value={receiptSearch} onChange={(e) => setReceiptSearch(e.target.value)} />
-        </div>
-        {filtered.length === 0 ? <EmptyState text="No receipts yet — they're generated automatically when you mark an invoice paid, or issue one directly." /> : (
+        <SearchBox className="loan-search" placeholder="Search by payer or receipt number…" value={receiptSearch} onChange={setReceiptSearch} />
+        {filtered.length === 0 ? <EmptyState text={receipts.length === 0 ? "No receipts yet — they're generated automatically when you mark an invoice paid, or issue one directly." : 'No receipts match your search.'} /> : (
           <div className="loan-list">
             {filtered.map((r) => {
               const client = clientById(r.clientId);
@@ -3050,37 +3654,56 @@ function App() {
   const renderExpenses = () => {
     const filtered = expenses
       .filter((e) => expenseCategoryFilter === 'All' || e.category === expenseCategoryFilter)
-      .sort((a, b) => new Date(b.date) - new Date(a.date));
+      .sort((a, b) => {
+        const { key, dir } = expenseSort;
+        const mul = dir === 'asc' ? 1 : -1;
+        if (key === 'date') return mul * (new Date(a.date) - new Date(b.date));
+        if (key === 'amount') return mul * (Number(a.amount) - Number(b.amount));
+        return mul * String(a[key] || '').localeCompare(String(b[key] || ''));
+      });
+    const visible = filtered.slice(0, expenseShowCount);
+    const sortHeader = (key, label) => (
+      <th className="sortable-th" onClick={() => setExpenseSort((s) => ({ key, dir: s.key === key && s.dir === 'desc' ? 'asc' : 'desc' }))}>
+        {label} {expenseSort.key === key && (expenseSort.dir === 'desc' ? <ChevronDown size={12} /> : <ChevronDown size={12} style={{ transform: 'rotate(180deg)' }} />)}
+      </th>
+    );
     return (
       <>
         <SectionHeader eyebrow="Every expense" title="Expenses"
           action={<button className="btn btn-primary" data-tour="expenses-new" onClick={() => openModal('newExpense', { date: todayISO() })}><Plus size={16} /> Log expense</button>} />
         <div className="field-row" style={{ marginBottom: 14 }}>
-          <select className="kb-input" value={expenseCategoryFilter} onChange={(e) => setExpenseCategoryFilter(e.target.value)}>
+          <select className="kb-input" value={expenseCategoryFilter} onChange={(e) => { setExpenseCategoryFilter(e.target.value); setExpenseShowCount(20); }}>
             <option value="All">All categories</option>
             {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
-        {filtered.length === 0 ? <EmptyState text="No expenses logged yet." /> : (
-          <table className="history-table">
-            <thead><tr><th>Date</th><th>Category</th><th>Note</th><th>Amount</th><th></th></tr></thead>
-            <tbody>
-              {filtered.map((e) => (
-                <tr key={e.id}>
-                  <td className="kb-mono">{new Date(e.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
-                  <td>{e.category}</td>
-                  <td className="panel-sub">{e.note || '—'}</td>
-                  <td className="kb-mono">{fmt(e.amount)}</td>
-                  <td>
-                    <div className="tab-entry-actions">
-                      <button className="icon-btn" onClick={() => openModal('editExpense', { ...e })}><Edit3 size={13} /></button>
-                      <button className="icon-btn" onClick={() => deleteExpense(e.id)}><Trash2 size={13} /></button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        {filtered.length === 0 ? <EmptyState text={expenses.length === 0 ? 'No expenses logged yet.' : `No expenses in ${expenseCategoryFilter}.`} /> : (
+          <>
+            <table className="history-table">
+              <thead><tr>{sortHeader('date', 'Date')}{sortHeader('category', 'Category')}<th>Note</th>{sortHeader('amount', 'Amount')}<th></th></tr></thead>
+              <tbody>
+                {visible.map((e) => (
+                  <tr key={e.id}>
+                    <td className="kb-mono">{new Date(e.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                    <td>{e.category}</td>
+                    <td className="panel-sub">{e.note || '—'}</td>
+                    <td className="kb-mono">{fmt(e.amount)}</td>
+                    <td>
+                      <div className="tab-entry-actions">
+                        <button className="icon-btn" onClick={() => openModal('editExpense', { ...e })} title="Edit" aria-label="Edit"><Edit3 size={13} /></button>
+                        <button className="icon-btn" onClick={() => deleteExpense(e.id)} title="Delete" aria-label="Delete"><Trash2 size={13} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {filtered.length > visible.length && (
+              <button className="btn btn-outline btn-small" style={{ marginTop: 12 }} onClick={() => setExpenseShowCount((n) => n + 20)}>
+                Load more ({filtered.length - visible.length} remaining)
+              </button>
+            )}
+          </>
         )}
       </>
     );
@@ -3109,7 +3732,7 @@ function App() {
                       </div>
                       <div className="loan-card-right">
                         <button className="btn btn-small btn-outline" onClick={() => openModal('setBudget', { id: b.id, category: b.category, monthlyLimit: b.monthlyLimit })}><Edit3 size={13} /> Edit</button>
-                        <button className="icon-btn" onClick={() => deleteBudget(b.id)}><Trash2 size={15} /></button>
+                        <button className="icon-btn" onClick={() => deleteBudget(b.id)} title="Delete" aria-label="Delete"><Trash2 size={15} /></button>
                       </div>
                     </div>
                     <ProgressBar value={spent} max={b.monthlyLimit} />
@@ -3127,6 +3750,209 @@ function App() {
       </>
     );
   };
+
+  const renderTaxOverview = () => {
+    const year = taxYearFilter;
+    const income = sumTaxCategoriesForYear(year, TAX_INCOME_CATEGORIES.filter((c) => c !== 'Non-Taxable Transfer'));
+    const deductible = sumTaxCategoriesForYear(year, TAX_DEDUCTION_CATEGORIES.filter((c) => c !== 'Personal (non-deductible)'));
+    const yearReturns = taxReturns.filter((r) => r.year === year);
+    const recent = [...taxTransactions].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 6);
+    return (
+      <>
+        <SectionHeader eyebrow="Tax" title="Tax overview"
+          action={
+            <select className="kb-input" style={{ width: 120 }} value={year} onChange={(e) => setTaxYearFilter(Number(e.target.value))}>
+              {taxYearsAvailable.map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
+          } />
+        <div className="stat-grid">
+          <StatCard label="Consolidated income" value={fmt(income)} icon={TrendingUp} tone="green" sub={`${year} · from ledger`} />
+          <StatCard label="Deductible / reliefs" value={fmt(deductible)} icon={CreditCard} tone="steel" sub={`${year} · from ledger`} />
+          <StatCard label="Transactions imported" value={taxTransactions.length} icon={Upload} tone="gold" sub={`${taxImports.length} import batch(es)`} />
+          <StatCard label="Returns this year" value={yearReturns.length} icon={Receipt} tone="brick" sub={`${taxReturns.length} total on file`} />
+        </div>
+        <div className="panel">
+          <div className="panel-title">How this works</div>
+          <div className="panel-sub" style={{ lineHeight: 1.6 }}>
+            1. Import statements from each of your banks in <strong>Import</strong> — any CSV export works, we auto-detect the columns.<br />
+            2. Review and tag every line in <strong>Ledger</strong> — income, deductible expenses, or personal/non-taxable.<br />
+            3. Calculate a return in <strong>Returns</strong> for a personal (PIT) or company (CIT) filing, then download or print it.
+          </div>
+        </div>
+        <div className="panel" style={{ marginTop: 16 }}>
+          <div className="panel-title">Recent transactions</div>
+          {recent.length === 0 ? <EmptyState text="No transactions consolidated yet — import a bank statement to get started." /> : (
+            <table className="history-table">
+              <thead><tr><th>Date</th><th>Source</th><th>Description</th><th>Category</th><th>Amount</th></tr></thead>
+              <tbody>
+                {recent.map((t) => (
+                  <tr key={t.id}>
+                    <td className="kb-mono">{new Date(t.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                    <td className="panel-sub">{t.source}</td>
+                    <td>{t.description}</td>
+                    <td className="panel-sub">{t.category}</td>
+                    <td className="kb-mono" style={{ color: t.amount >= 0 ? 'var(--green)' : 'var(--brick)' }}>{t.amount >= 0 ? '+' : '−'}{fmt(Math.abs(t.amount))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </>
+    );
+  };
+
+  const renderTaxImport = () => (
+    <>
+      <SectionHeader eyebrow="Bring in every account" title="Import a bank statement" />
+      <div className="panel">
+        <div className="panel-title">Add a statement</div>
+        <div className="panel-sub" style={{ marginBottom: 12 }}>
+          Works with CSV exports from any bank or fintech — GTBank, Access, Zenith, UBA, First Bank, Opay, Kuda, Moniepoint and more.
+          We auto-detect the date, description and amount columns, whatever the bank calls them.
+        </div>
+        <div className="field"><label>Bank / account name</label>
+          <input className="kb-input" value={taxImportSourceName} onChange={(e) => setTaxImportSourceName(e.target.value)} placeholder="e.g. GTBank — Current Account" />
+        </div>
+        <input ref={taxFileInputRef} type="file" accept=".csv,.txt,text/csv" style={{ display: 'none' }} onChange={handleTaxFileSelected} />
+        <button className="btn btn-primary" onClick={triggerTaxImport}><Upload size={15} /> Choose statement file</button>
+
+        {taxImportPreview && (
+          <div className="panel" style={{ marginTop: 16, background: 'var(--surface-2)' }}>
+            <div className="panel-title">{taxImportPreview.fileName}</div>
+            {taxImportPreview.rows.length > 0 ? (
+              <>
+                <div className="panel-sub" style={{ marginBottom: 10 }}>{taxImportPreview.rows.length} transaction(s) found. Preview of the first 8:</div>
+                <table className="history-table">
+                  <thead><tr><th>Date</th><th>Description</th><th>Amount</th></tr></thead>
+                  <tbody>
+                    {taxImportPreview.rows.slice(0, 8).map((r, i) => (
+                      <tr key={i}>
+                        <td className="kb-mono">{r.date}</td>
+                        <td>{r.description}</td>
+                        <td className="kb-mono" style={{ color: r.amount >= 0 ? 'var(--green)' : 'var(--brick)' }}>{r.amount >= 0 ? '+' : '−'}{fmt(Math.abs(r.amount))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="settings-actions" style={{ marginTop: 14 }}>
+                  <button className="btn btn-primary" onClick={confirmTaxImport}><CheckCircle2 size={15} /> Add {taxImportPreview.rows.length} to ledger</button>
+                  <button className="btn btn-outline" onClick={cancelTaxImportPreview}>Cancel</button>
+                </div>
+              </>
+            ) : (
+              <div className="field-hint">Couldn't read any transactions from this file.</div>
+            )}
+            {taxImportPreview.errors.length > 0 && (
+              <div className="field-hint" style={{ marginTop: 10 }}>
+                {taxImportPreview.errors.slice(0, 5).join(' ')}{taxImportPreview.errors.length > 5 ? ` (+${taxImportPreview.errors.length - 5} more)` : ''}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
+        <div className="panel-title">Import history</div>
+        {taxImports.length === 0 ? <EmptyState text="No statements imported yet." /> : (
+          <div className="loan-list">
+            {taxImports.map((b) => (
+              <div key={b.id} className="loan-card">
+                <div className="loan-card-body" style={{ paddingTop: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div className="loan-name kb-display">{b.source}</div>
+                    <div className="panel-sub">{b.fileName} · {b.count} transaction(s) · imported {new Date(b.importedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
+                  </div>
+                  <button className="icon-btn" onClick={() => removeTaxImportBatch(b.id)} title="Remove batch" aria-label="Remove batch"><Trash2 size={15} /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+
+  const renderTaxTransactions = () => {
+    const filtered = taxTransactions
+      .filter((t) => new Date(t.date).getFullYear() === Number(taxYearFilter))
+      .filter((t) => taxSourceFilter === 'All' || t.source === taxSourceFilter)
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+    const income = filtered.filter((t) => t.amount >= 0 && t.category !== 'Non-Taxable Transfer').reduce((s, t) => s + t.amount, 0);
+    const deductible = filtered.filter((t) => TAX_DEDUCTION_CATEGORIES.includes(t.category) && t.category !== 'Personal (non-deductible)').reduce((s, t) => s + Math.abs(t.amount), 0);
+    return (
+      <>
+        <SectionHeader eyebrow="Every bank, one ledger" title="Consolidated ledger"
+          action={<button className="btn btn-primary" onClick={() => openModal('newTaxTxn', { date: todayISO(), direction: 'in', source: 'Manual entry' })}><Plus size={16} /> Add entry</button>} />
+        <div className="field-row" style={{ marginBottom: 14 }}>
+          <select className="kb-input" value={taxYearFilter} onChange={(e) => setTaxYearFilter(Number(e.target.value))}>
+            {taxYearsAvailable.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <select className="kb-input" value={taxSourceFilter} onChange={(e) => setTaxSourceFilter(e.target.value)}>
+            <option value="All">All sources</option>
+            {taxSourcesAvailable.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div className="stat-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)', marginBottom: 18 }}>
+          <StatCard label="Income (this filter)" value={fmt(income)} icon={TrendingUp} tone="green" />
+          <StatCard label="Deductible (this filter)" value={fmt(deductible)} icon={CreditCard} tone="steel" />
+        </div>
+        {filtered.length === 0 ? <EmptyState text={taxTransactions.length === 0 ? 'No transactions yet — import a statement or add one manually.' : 'No transactions match this filter.'} /> : (
+          <table className="history-table">
+            <thead><tr><th>Date</th><th>Source</th><th>Description</th><th>Category</th><th>Amount</th><th></th></tr></thead>
+            <tbody>
+              {filtered.map((t) => (
+                <tr key={t.id}>
+                  <td className="kb-mono">{new Date(t.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                  <td className="panel-sub">{t.source}</td>
+                  <td>{t.description}</td>
+                  <td>
+                    <select className="kb-input" style={{ padding: '5px 8px', fontSize: 12.5 }} value={t.category} onChange={(e) => updateTaxTxnCategory(t.id, e.target.value)}>
+                      <optgroup label="Income">{TAX_INCOME_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}</optgroup>
+                      <optgroup label="Deductions / reliefs">{TAX_DEDUCTION_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}</optgroup>
+                    </select>
+                  </td>
+                  <td className="kb-mono" style={{ color: t.amount >= 0 ? 'var(--green)' : 'var(--brick)' }}>{t.amount >= 0 ? '+' : '−'}{fmt(Math.abs(t.amount))}</td>
+                  <td>
+                    <div className="tab-entry-actions">
+                      <button className="icon-btn" onClick={() => openModal('editTaxTxn', { ...t, direction: t.amount >= 0 ? 'in' : 'out', amount: Math.abs(t.amount) })} title="Edit" aria-label="Edit"><Edit3 size={13} /></button>
+                      <button className="icon-btn" onClick={() => deleteTaxTxn(t.id)} title="Delete" aria-label="Delete"><Trash2 size={13} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </>
+    );
+  };
+
+  const renderTaxReturns = () => (
+    <>
+      <SectionHeader eyebrow="Calculate & file" title="Tax returns"
+        action={<button className="btn btn-primary" onClick={openNewTaxReturnModal}><Plus size={16} /> New tax return</button>} />
+      {taxReturns.length === 0 ? <EmptyState text="No tax returns yet — calculate one from your consolidated ledger." /> : (
+        <div className="plan-card-grid">
+          {taxReturns.map((r) => (
+            <div key={r.id} className="plan-card client-card">
+              <div className="plan-card-top">
+                <span className="plan-card-name">{r.taxpayerName} — {r.year}</span>
+                <Stamp status={r.status === 'filed' ? 'completed' : 'due-soon'} label={r.status === 'filed' ? 'Filed' : 'Draft'} />
+              </div>
+              <div className="plan-card-meta">{r.taxpayerType === 'individual' ? 'Personal Income Tax' : 'Companies Income Tax'}{r.tin ? ` · TIN ${r.tin}` : ''}</div>
+              <div className="plan-card-total">Tax payable: {fmt(r.taxPayable + (r.developmentLevy || 0))}</div>
+              <div className="settings-actions" style={{ marginTop: 12 }}>
+                <button className="btn btn-outline btn-small" onClick={() => setTaxReturnDoc(r)}><FileText size={13} /> Output</button>
+                <button className="btn btn-outline btn-small" onClick={() => openModal('newTaxReturn', { ...r })}><Edit3 size={13} /> Edit</button>
+                <button className="icon-btn" onClick={() => deleteTaxReturn(r.id)} title="Delete" aria-label="Delete"><Trash2 size={15} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
 
   const renderAlerts = () => {
     const groups = ['Payments', 'Loans given', 'Loans received', 'Thrift contributions'];
@@ -3370,6 +4196,7 @@ function App() {
     loans: { label: 'Loan Tracking', icon: HandCoins },
     payments: { label: 'Payment Portal', icon: Wallet },
     spending: { label: 'Expense & Budgeting', icon: CreditCard },
+    tax: { label: 'Tax', icon: Landmark },
   };
   const MODULE_NAV = {
     thrift: [
@@ -3394,11 +4221,17 @@ function App() {
       { id: 'expenses', label: 'Expenses', icon: CreditCard },
       { id: 'budgets', label: 'Budgets', icon: Target },
     ],
+    tax: [
+      { id: 'taxOverview', label: 'Overview', icon: LayoutDashboard },
+      { id: 'taxImport', label: 'Import', icon: Upload },
+      { id: 'taxTransactions', label: 'Ledger', icon: FileText },
+      { id: 'taxReturns', label: 'Returns', icon: Receipt },
+    ],
   };
   const openModule = (mod) => { setActiveModule(mod); setActiveTab(MODULE_NAV[mod][0].id); };
   const goHome = () => { setActiveModule('home'); setActiveTab('home'); };
   const MODULE_ALERT_GROUPS = {
-    thrift: ['Thrift contributions'], loans: ['Loans given', 'Loans received'], payments: ['Payments'], spending: [],
+    thrift: ['Thrift contributions'], loans: ['Loans given', 'Loans received'], payments: ['Payments'], spending: [], tax: [],
   };
 
   // Drives the guided tour into each individual section instead of only pointing
@@ -3417,7 +4250,12 @@ function App() {
     return (
       <>
         <WelcomeScreen settings={settings} onStart={() => setPreAuthWelcomeSeen(true)} />
-        {toast && <div className="toast">{toast}</div>}
+        {toast && (
+          <div className="toast" role="status" aria-live="polite">
+            <span>{toast}</span>
+            <button type="button" className="toast-close" onClick={() => setToast('')} aria-label="Dismiss"><X size={13} /></button>
+          </div>
+        )}
       </>
     );
   }
@@ -3426,7 +4264,12 @@ function App() {
     return (
       <>
         <AuthScreen users={users} onLogin={handleLogin} onSignup={handleSignup} flash={flash} />
-        {toast && <div className="toast">{toast}</div>}
+        {toast && (
+          <div className="toast" role="status" aria-live="polite">
+            <span>{toast}</span>
+            <button type="button" className="toast-close" onClick={() => setToast('')} aria-label="Dismiss"><X size={13} /></button>
+          </div>
+        )}
       </>
     );
   }
@@ -3551,6 +4394,9 @@ function App() {
         .master-detail{display:grid;grid-template-columns:300px 1fr;gap:16px;align-items:start;}
         .master-list{padding:14px;}
         .search-box{display:flex;align-items:center;gap:7px;border:1px solid var(--paper-line);border-radius:8px;padding:7px 10px;margin-bottom:10px;color:var(--ink-soft);}
+        .search-box input{flex:1;min-width:0;}
+        .search-clear{background:none;border:none;padding:2px;margin:0;display:flex;align-items:center;color:var(--ink-soft);cursor:pointer;border-radius:50%;flex-shrink:0;}
+        .search-clear:hover{color:var(--ink);background:var(--surface-2);}
         .search-box input{border:none;outline:none;font-size:13px;width:100%;background:transparent;}
         .member-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px;max-height:520px;overflow-y:auto;}
         .member-list li{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer;}
@@ -3571,6 +4417,9 @@ function App() {
         .tag-row{display:flex;gap:6px;flex-wrap:wrap;}
         .history-table{width:100%;border-collapse:collapse;font-size:13px;}
         .history-table th{text-align:left;color:var(--ink-soft);font-weight:600;font-size:11.5px;padding:6px 4px;border-bottom:1px solid var(--paper-line);}
+        .sortable-th{cursor:pointer;user-select:none;white-space:nowrap;}
+        .sortable-th:hover{color:var(--ink);}
+        .sortable-th svg{vertical-align:-1px;}
         .history-table td{padding:7px 4px;border-bottom:1px solid #F1EDE1;}
         .loan-search{max-width:320px;margin-bottom:16px;}
         .loan-groups{display:flex;flex-direction:column;gap:20px;}
@@ -3594,6 +4443,8 @@ function App() {
         .payment-history li{display:flex;align-items:center;gap:8px;font-size:13px;}
         .pay-icon{color:var(--green);}
         .add-payment-row{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;}
+        .add-payment-row-wrap{display:flex;flex-direction:column;}
+        .field-error{font-size:11.5px;color:var(--brick);margin-top:5px;font-weight:600;}
         .stamp{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border:1.5px solid;border-radius:4px;text-transform:uppercase;font-size:10.5px;letter-spacing:.07em;font-weight:700;transform:rotate(-2deg);font-family:'IBM Plex Mono',monospace;white-space:nowrap;}
         .stamp-completed{color:var(--green);border-color:var(--green);background:var(--green-bg);}
         .stamp-overdue{color:var(--brick);border-color:var(--brick);background:var(--brick-bg);}
@@ -3675,7 +4526,9 @@ function App() {
         .add-tab-entry-fields{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
         .receipt-link{margin-left:auto;font-size:11.5px;}
         .settings-actions{display:flex;gap:10px;flex-wrap:wrap;}
-        .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:10px;font-size:13px;box-shadow:0 10px 30px rgba(0,0,0,0.25);z-index:100;}
+        .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 14px 11px 20px;border-radius:10px;font-size:13px;box-shadow:0 10px 30px rgba(0,0,0,0.25);z-index:100;display:flex;align-items:center;gap:10px;max-width:min(92vw,420px);}
+        .toast-close{background:none;border:none;color:rgba(255,255,255,0.7);cursor:pointer;padding:4px;display:flex;align-items:center;flex-shrink:0;border-radius:50%;}
+        .toast-close:hover{color:#fff;background:rgba(255,255,255,0.15);}
         .receipt-card{max-width:420px;}
         .receipt-sheet{background:#fff;border:1.5px dashed var(--paper-line);border-radius:10px;padding:20px;}
         .receipt-brand{font-size:19px;font-weight:600;}
@@ -3713,6 +4566,8 @@ function App() {
         .home-card.tone-steel .home-card-icon{background:var(--steel-bg);color:var(--steel);}
         .home-card.tone-gold .home-card-icon{background:var(--gold-bg);color:var(--gold);}
         .home-card.tone-brick .home-card-icon{background:var(--brick-bg);color:var(--brick);}
+        .home-card.tone-navy .home-card-icon{background:var(--navy-bg);color:var(--navy);}
+        .tone-navy .stat-icon{background:var(--navy-bg);color:var(--navy);}
         .home-card-title{font-size:20px;font-weight:600;margin-bottom:8px;}
         .home-card-desc{font-size:13px;color:var(--ink-soft);line-height:1.5;margin-bottom:18px;min-height:58px;}
         .home-card-foot{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;font-weight:600;color:var(--ink);padding-top:14px;border-top:1px solid var(--paper-line);}
@@ -3737,6 +4592,14 @@ function App() {
         .cycle-history{margin-top:12px;display:flex;flex-direction:column;gap:6px;}
         .cycle-history-row{display:flex;align-items:center;gap:10px;font-size:12.5px;background:var(--surface);border-radius:8px;padding:7px 10px;}
         .cycle-history-row span:first-child{flex:1;color:var(--ink-soft);}
+        .payout-order-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:5px;}
+        .payout-order-row{display:flex;align-items:center;gap:9px;font-size:12.5px;background:var(--surface);border-radius:8px;padding:6px 8px 6px 10px;}
+        .payout-order-pos{color:var(--ink-soft);width:16px;flex-shrink:0;}
+        .payout-order-name{flex:1;font-weight:600;}
+        .payout-order-paid{opacity:0.6;}
+        .payout-order-next{outline:1.5px solid var(--gold);}
+        .payout-order-actions{display:flex;gap:2px;}
+        .payout-order-actions .icon-btn:disabled{opacity:0.25;cursor:default;}
         @media (max-width:900px){
           .stat-grid{grid-template-columns:repeat(2,1fr);}
           .two-col{grid-template-columns:1fr;}
@@ -3810,6 +4673,10 @@ function App() {
             {activeTab === 'spendingOverview' && renderSpendingOverview()}
             {activeTab === 'expenses' && renderExpenses()}
             {activeTab === 'budgets' && renderBudgets()}
+            {activeTab === 'taxOverview' && renderTaxOverview()}
+            {activeTab === 'taxImport' && renderTaxImport()}
+            {activeTab === 'taxTransactions' && renderTaxTransactions()}
+            {activeTab === 'taxReturns' && renderTaxReturns()}
             {activeTab === 'alerts' && renderAlerts()}
             {activeTab === 'settings' && renderSettings()}
           </div>
@@ -3824,7 +4691,12 @@ function App() {
         </div>
       )}
 
-      {toast && <div className="toast">{toast}</div>}
+      {toast && (
+          <div className="toast" role="status" aria-live="polite">
+            <span>{toast}</span>
+            <button type="button" className="toast-close" onClick={() => setToast('')} aria-label="Dismiss"><X size={13} /></button>
+          </div>
+        )}
       {tourStep !== null && (
         <TourOverlay step={tourStep} onNext={tourNext} onBack={tourBack} onClose={() => { setTourStep(null); goHome(); }} />
       )}
@@ -3844,13 +4716,13 @@ function App() {
             </div>
             <div className="field">
               <label>Amount per round</label>
-              <input type="number" className="kb-input" placeholder="500" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} />
+              <input type="number" min="0" inputMode="decimal" className="kb-input" placeholder="500" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} />
             </div>
           </div>
           {form.category === 'Target' && (
             <div className="field">
               <label>Target amount</label>
-              <input type="number" className="kb-input" placeholder="240000" value={form.targetAmount || ''} onChange={(e) => setField('targetAmount', e.target.value)} />
+              <input type="number" min="0" inputMode="decimal" className="kb-input" placeholder="240000" value={form.targetAmount || ''} onChange={(e) => setField('targetAmount', e.target.value)} />
             </div>
           )}
           {form.category === 'Target' && (
@@ -3919,7 +4791,7 @@ function App() {
           </div>
           <div className="field-row">
             <div className="field"><label>Principal amount</label>
-              <input type="number" className="kb-input" value={form.principal || ''} onChange={(e) => setField('principal', e.target.value)} placeholder="50000" />
+              <input type="number" min="0" inputMode="decimal" className="kb-input" value={form.principal || ''} onChange={(e) => setField('principal', e.target.value)} placeholder="50000" />
             </div>
             <div className="field"><label>Date given</label>
               <input type="date" className="kb-input" value={form.dateGiven || todayISO()} onChange={(e) => setField('dateGiven', e.target.value)} />
@@ -3930,7 +4802,7 @@ function App() {
               <input type="date" className="kb-input" value={form.dueDate || ''} onChange={(e) => setField('dueDate', e.target.value)} />
             </div>
             <div className="field"><label>Interest (% per year, optional)</label>
-              <input type="number" className="kb-input" value={form.interestRate || ''} onChange={(e) => setField('interestRate', e.target.value)} placeholder="0" />
+              <input type="number" min="0" inputMode="decimal" className="kb-input" value={form.interestRate || ''} onChange={(e) => setField('interestRate', e.target.value)} placeholder="0" />
             </div>
           </div>
           <div className="field"><label>Phone (for WhatsApp reminders, optional)</label>
@@ -3958,7 +4830,7 @@ function App() {
           </div>
           <div className="field-row">
             <div className="field"><label>Principal amount</label>
-              <input type="number" className="kb-input" value={form.principal || ''} onChange={(e) => setField('principal', e.target.value)} placeholder="100000" />
+              <input type="number" min="0" inputMode="decimal" className="kb-input" value={form.principal || ''} onChange={(e) => setField('principal', e.target.value)} placeholder="100000" />
             </div>
             <div className="field"><label>Date received</label>
               <input type="date" className="kb-input" value={form.dateReceived || todayISO()} onChange={(e) => setField('dateReceived', e.target.value)} />
@@ -3969,7 +4841,7 @@ function App() {
               <input type="date" className="kb-input" value={form.dueDate || ''} onChange={(e) => setField('dueDate', e.target.value)} />
             </div>
             <div className="field"><label>Interest (% per year, optional)</label>
-              <input type="number" className="kb-input" value={form.interestRate || ''} onChange={(e) => setField('interestRate', e.target.value)} placeholder="0" />
+              <input type="number" min="0" inputMode="decimal" className="kb-input" value={form.interestRate || ''} onChange={(e) => setField('interestRate', e.target.value)} placeholder="0" />
             </div>
           </div>
           <div className="field"><label>Phone (for WhatsApp reminders, optional)</label>
@@ -4052,7 +4924,7 @@ function App() {
           </div>
           <div className="field-row">
             <div className="field"><label>Amount</label>
-              <input type="number" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} />
+              <input type="number" min="0" inputMode="decimal" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} />
             </div>
             <div className="field"><label>Date</label>
               <input type="date" className="kb-input" value={form.date || todayISO()} onChange={(e) => setField('date', e.target.value)} />
@@ -4064,7 +4936,7 @@ function App() {
           <button className="btn btn-primary" onClick={() => {
             if (!form.amount || Number(form.amount) <= 0) { flash('Enter a valid amount.'); return; }
             updateTabEntry(form.tabId, form.entryId, { type: form.type, amount: Number(form.amount), date: form.date || todayISO(), note: form.note || '' });
-            closeModal();
+            closeModalSilently();
           }}>Save changes</button>
         </Modal>
       )}
@@ -4078,7 +4950,7 @@ function App() {
           </div>
           <div className="field-row">
             <div className="field"><label>Amount</label>
-              <input type="number" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} placeholder="5000" />
+              <input type="number" min="0" inputMode="decimal" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} placeholder="5000" />
             </div>
             <div className="field"><label>Date</label>
               <input type="date" className="kb-input" value={form.date || todayISO()} onChange={(e) => setField('date', e.target.value)} />
@@ -4099,7 +4971,7 @@ function App() {
           </div>
           <div className="field-row">
             <div className="field"><label>Amount</label>
-              <input type="number" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} />
+              <input type="number" min="0" inputMode="decimal" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} />
             </div>
             <div className="field"><label>Date</label>
               <input type="date" className="kb-input" value={form.date || todayISO()} onChange={(e) => setField('date', e.target.value)} />
@@ -4120,9 +4992,108 @@ function App() {
             </select>
           </div>
           <div className="field"><label>Monthly limit</label>
-            <input type="number" className="kb-input" value={form.monthlyLimit || ''} onChange={(e) => setField('monthlyLimit', e.target.value)} placeholder="20000" />
+            <input type="number" min="0" inputMode="decimal" className="kb-input" value={form.monthlyLimit || ''} onChange={(e) => setField('monthlyLimit', e.target.value)} placeholder="20000" />
           </div>
           <button className="btn btn-primary" onClick={submitBudget}>Save budget</button>
+        </Modal>
+      )}
+      {(modal === 'newTaxTxn' || modal === 'editTaxTxn') && (
+        <Modal title={modal === 'newTaxTxn' ? 'Add ledger entry' : 'Edit entry'} onClose={closeModal}>
+          <div className="field-row">
+            <div className="field"><label>Date</label>
+              <input type="date" className="kb-input" value={form.date || todayISO()} onChange={(e) => setField('date', e.target.value)} />
+            </div>
+            <div className="field"><label>Direction</label>
+              <select className="kb-input" value={form.direction || 'in'} onChange={(e) => setField('direction', e.target.value)}>
+                <option value="in">Money in</option>
+                <option value="out">Money out</option>
+              </select>
+            </div>
+          </div>
+          <div className="field"><label>Description</label>
+            <input className="kb-input" value={form.description || ''} onChange={(e) => setField('description', e.target.value)} placeholder="e.g. Payment from client" />
+          </div>
+          <div className="field-row">
+            <div className="field"><label>Amount</label>
+              <input type="number" min="0" inputMode="decimal" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} placeholder="50000" />
+            </div>
+            <div className="field"><label>Source</label>
+              <input className="kb-input" value={form.source || ''} onChange={(e) => setField('source', e.target.value)} placeholder="e.g. GTBank" />
+            </div>
+          </div>
+          <div className="field"><label>Category</label>
+            <select className="kb-input" value={form.category || ''} onChange={(e) => setField('category', e.target.value)}>
+              <option value="">Choose a category…</option>
+              <optgroup label="Income">{TAX_INCOME_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}</optgroup>
+              <optgroup label="Deductions / reliefs">{TAX_DEDUCTION_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}</optgroup>
+            </select>
+          </div>
+          <button className="btn btn-primary" onClick={modal === 'newTaxTxn' ? submitNewTaxTxn : submitEditTaxTxn}>{modal === 'newTaxTxn' ? 'Add entry' : 'Save changes'}</button>
+        </Modal>
+      )}
+      {modal === 'newTaxReturn' && (
+        <Modal title={form.id ? 'Edit tax return' : 'Calculate a tax return'} onClose={closeModal}>
+          <div className="field-row">
+            <div className="field"><label>Tax year</label>
+              <input type="number" className="kb-input" value={form.year || new Date().getFullYear()} onChange={(e) => setField('year', e.target.value)} />
+            </div>
+            <div className="field"><label>Taxpayer type</label>
+              <select className="kb-input" value={form.taxpayerType || 'individual'} disabled={!!form.id} onChange={(e) => setField('taxpayerType', e.target.value)}>
+                <option value="individual">Individual (PIT)</option>
+                <option value="company">Company (CIT)</option>
+              </select>
+            </div>
+          </div>
+          <div className="field"><label>{form.taxpayerType === 'company' ? 'Company name' : 'Full name'}</label>
+            <input className="kb-input" value={form.taxpayerName || ''} onChange={(e) => setField('taxpayerName', e.target.value)} placeholder={form.taxpayerType === 'company' ? 'e.g. Bright Star Ventures Ltd' : 'e.g. Amaka Obi'} />
+          </div>
+          <div className="field"><label>TIN (optional)</label>
+            <input className="kb-input" value={form.tin || ''} onChange={(e) => setField('tin', e.target.value)} placeholder="Tax Identification Number" />
+          </div>
+          {form.taxpayerType === 'company' ? (
+            <>
+              <div className="field"><label>Annual turnover</label>
+                <input type="number" min="0" className="kb-input" value={form.turnover ?? ''} onChange={(e) => setField('turnover', e.target.value)} />
+                <div className="field-hint">Pre-filled from "Business / Trading Income" transactions for this year — adjust if needed.</div>
+              </div>
+              <div className="field"><label>Total fixed assets</label>
+                <input type="number" min="0" className="kb-input" value={form.fixedAssets ?? ''} onChange={(e) => setField('fixedAssets', e.target.value)} placeholder="0" />
+              </div>
+              <div className="field"><label>Allowable business expenses</label>
+                <input type="number" min="0" className="kb-input" value={form.allowableExpenses ?? ''} onChange={(e) => setField('allowableExpenses', e.target.value)} />
+              </div>
+              <div className="field-hint">Small companies (turnover ≤ ₦100m and fixed assets ≤ ₦250m) owe ₦0 CIT under the Nigeria Tax Act 2025.</div>
+            </>
+          ) : (
+            <>
+              <div className="field"><label>Gross income</label>
+                <input type="number" min="0" className="kb-input" value={form.grossIncome ?? ''} onChange={(e) => setField('grossIncome', e.target.value)} />
+                <div className="field-hint">Pre-filled from your consolidated ledger for this year — adjust if needed.</div>
+              </div>
+              <div className="field-row">
+                <div className="field"><label>Pension contribution</label>
+                  <input type="number" min="0" className="kb-input" value={form.pensionContribution ?? ''} onChange={(e) => setField('pensionContribution', e.target.value)} />
+                </div>
+                <div className="field"><label>NHF contribution</label>
+                  <input type="number" min="0" className="kb-input" value={form.nhfContribution ?? ''} onChange={(e) => setField('nhfContribution', e.target.value)} />
+                </div>
+              </div>
+              <div className="field-row">
+                <div className="field"><label>Life assurance premium</label>
+                  <input type="number" min="0" className="kb-input" value={form.lifeAssurancePremium ?? ''} onChange={(e) => setField('lifeAssurancePremium', e.target.value)} />
+                  <div className="field-hint">Capped at ₦100,000.</div>
+                </div>
+                <div className="field"><label>Annual rent paid</label>
+                  <input type="number" min="0" className="kb-input" value={form.rentPaidAnnual ?? ''} onChange={(e) => setField('rentPaidAnnual', e.target.value)} />
+                  <div className="field-hint">Relief = lower of ₦500,000 or 20% of this.</div>
+                </div>
+              </div>
+              <div className="field"><label>Other reliefs (optional)</label>
+                <input type="number" min="0" className="kb-input" value={form.otherReliefs ?? ''} onChange={(e) => setField('otherReliefs', e.target.value)} />
+              </div>
+            </>
+          )}
+          <button className="btn btn-primary" onClick={submitTaxReturn}>{form.id ? 'Recalculate & save' : 'Calculate tax return'}</button>
         </Modal>
       )}
       {modal === 'planMemberLoan' && (
@@ -4135,7 +5106,7 @@ function App() {
           </div>
           <div className="field-row">
             <div className="field"><label>Amount</label>
-              <input type="number" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} placeholder="10000" />
+              <input type="number" min="0" inputMode="decimal" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} placeholder="10000" />
             </div>
             <div className="field"><label>Date</label>
               <input type="date" className="kb-input" value={form.date || todayISO()} onChange={(e) => setField('date', e.target.value)} />
@@ -4158,7 +5129,7 @@ function App() {
                 <input type="date" className="kb-input" value={form.dueDate || ''} onChange={(e) => setField('dueDate', e.target.value)} />
               </div>
               <div className="field"><label>Interest (%/yr, optional)</label>
-                <input type="number" className="kb-input" value={form.interestRate || ''} onChange={(e) => setField('interestRate', e.target.value)} placeholder="0" />
+                <input type="number" min="0" inputMode="decimal" className="kb-input" value={form.interestRate || ''} onChange={(e) => setField('interestRate', e.target.value)} placeholder="0" />
               </div>
             </div>
           )}
@@ -4211,9 +5182,9 @@ function App() {
               {(form.items || []).map((it) => (
                 <div key={it.id} className="invoice-item-row">
                   <input className="kb-input" placeholder="Description" value={it.desc} onChange={(e) => updateInvoiceItem(it.id, 'desc', e.target.value)} style={{ flex: 3, minWidth: 0 }} />
-                  <input type="number" className="kb-input" placeholder="Qty" value={it.qty} onChange={(e) => updateInvoiceItem(it.id, 'qty', e.target.value)} style={{ width: 56, flexShrink: 0 }} />
-                  <input type="number" className="kb-input" placeholder="Price" value={it.price} onChange={(e) => updateInvoiceItem(it.id, 'price', e.target.value)} style={{ width: 90, flexShrink: 0 }} />
-                  <button className="icon-btn" onClick={() => removeInvoiceItem(it.id)}><X size={15} /></button>
+                  <input type="number" min="0" inputMode="decimal" className="kb-input" placeholder="Qty" value={it.qty} onChange={(e) => updateInvoiceItem(it.id, 'qty', e.target.value)} style={{ width: 56, flexShrink: 0 }} />
+                  <input type="number" min="0" inputMode="decimal" className="kb-input" placeholder="Price" value={it.price} onChange={(e) => updateInvoiceItem(it.id, 'price', e.target.value)} style={{ width: 90, flexShrink: 0 }} />
+                  <button className="icon-btn" onClick={() => removeInvoiceItem(it.id)} title="Remove item" aria-label="Remove item"><X size={15} /></button>
                 </div>
               ))}
             </div>
@@ -4244,7 +5215,7 @@ function App() {
           )}
           <div className="field-row">
             <div className="field"><label>Amount received</label>
-              <input type="number" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} placeholder="25000" />
+              <input type="number" min="0" inputMode="decimal" className="kb-input" value={form.amount || ''} onChange={(e) => setField('amount', e.target.value)} placeholder="25000" />
             </div>
             <div className="field"><label>Date</label>
               <input type="date" className="kb-input" value={form.date || todayISO()} onChange={(e) => setField('date', e.target.value)} />
@@ -4291,6 +5262,15 @@ function App() {
           onClose={() => setPaymentReceiptDoc(null)}
           shareToWhatsApp={shareToWhatsApp}
           shareImageToWhatsApp={shareImageToWhatsApp}
+        />
+      )}
+      {taxReturnDoc && (
+        <TaxReturnDocModal
+          taxReturn={taxReturnDoc}
+          settings={settings}
+          fmt={fmt}
+          onClose={() => setTaxReturnDoc(null)}
+          onMarkFiled={markTaxReturnFiled}
         />
       )}
     </div>
