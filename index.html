@@ -14,6 +14,15 @@
 <script src="https://unpkg.com/lucide-react@0.383.0/dist/umd/lucide-react.js"></script>
 <script src="https://unpkg.com/recharts@2/umd/Recharts.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<!-- Used by the Tax import to read Excel (.xlsx/.xls) bank statement exports -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Used by the Tax import to read PDF bank statement exports -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  if (window.pdfjsLib) {
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+</script>
 <style>
   html, body { margin: 0; padding: 0; overflow-x: hidden; width: 100%; max-width: 100%; }
   *, *::before, *::after { box-sizing: border-box; }
@@ -566,23 +575,23 @@ function matchHeader(header) {
 // { date, description, amount } rows, where amount is signed (+ credit / − debit). Handles
 // three common statement layouts: separate Debit & Credit columns, a single signed/typed
 // Amount column, or an Amount column paired with a Dr/Cr Type column.
-function parseBankStatementText(text) {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length < 2) return { rows: [], errors: ['File looks empty or has no data rows.'] };
-  const firstLine = lines[0];
-  const delim = (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length
-    ? ';' : (firstLine.includes('\t') ? '\t' : ',');
-  const headerCells = splitDelimitedLine(firstLine, delim);
+// Core parser shared by every import source (CSV/TXT text, Excel sheets, PDF-extracted
+// lines). Takes an array of already-split rows (each an array of cell strings), where the
+// first row is expected to be the header row, and returns normalised { date, description,
+// amount } rows.
+function parseBankStatementRows(rows) {
+  if (rows.length < 2) return { rows: [], errors: ['File looks empty or has no data rows.'] };
+  const headerCells = (rows[0] || []).map((c) => (c === undefined || c === null) ? '' : String(c));
   const colMap = {};
   headerCells.forEach((h, i) => { const key = matchHeader(h); if (key && !(key in colMap)) colMap[key] = i; });
   if (colMap.date === undefined || colMap.description === undefined) {
     return { rows: [], errors: ['Could not find Date and Description/Narration columns. Make sure the first row is a header row.'] };
   }
-  const rows = [];
+  const out = [];
   const errors = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cells = splitDelimitedLine(lines[i], delim);
-    if (cells.every((c) => !c)) continue;
+  for (let i = 1; i < rows.length; i++) {
+    const cells = (rows[i] || []).map((c) => (c === undefined || c === null) ? '' : String(c));
+    if (cells.every((c) => !c.trim())) continue;
     const date = parseStatementDate(cells[colMap.date]);
     const description = (cells[colMap.description] || '').trim();
     let amount = NaN;
@@ -602,9 +611,111 @@ function parseBankStatementText(text) {
       }
     }
     if (!date || !description || isNaN(amount)) { errors.push(`Row ${i + 1}: couldn't read this line, skipped.`); continue; }
-    rows.push({ date, description, amount });
+    out.push({ date, description, amount });
   }
-  return { rows, errors };
+  return { rows: out, errors };
+}
+
+// Accepts CSV/TSV/semicolon-delimited text exported from any bank and normalises it into
+// { date, description, amount } rows, where amount is signed (+ credit / − debit). Handles
+// three common statement layouts: separate Debit & Credit columns, a single signed/typed
+// Amount column, or an Amount column paired with a Dr/Cr Type column.
+function parseBankStatementText(text) {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length < 2) return { rows: [], errors: ['File looks empty or has no data rows.'] };
+  const firstLine = lines[0];
+  const delim = (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length
+    ? ';' : (firstLine.includes('\t') ? '\t' : ',');
+  const rows = lines.map((l) => splitDelimitedLine(l, delim));
+  return parseBankStatementRows(rows);
+}
+
+// Some downloaded statement exports (Excel especially) have a few banner/title rows —
+// bank name, account holder, statement period — above the real header row. Scan the first
+// handful of rows for one that actually yields a usable header + data, trying each in turn
+// as row.
+function parseBankStatementRowsWithHeaderScan(rows, maxScan) {
+  const limit = Math.min(maxScan || 15, Math.max(rows.length - 1, 0));
+  let lastResult = { rows: [], errors: ['Could not find a Date and Description/Narration column.'] };
+  for (let start = 0; start <= limit; start++) {
+    const result = parseBankStatementRows(rows.slice(start));
+    if (result.rows.length > 0) return result;
+    lastResult = result;
+  }
+  return lastResult;
+}
+
+// Reads an Excel workbook (.xlsx/.xls) and finds the first sheet that yields a readable
+// statement table.
+function parseBankStatementWorkbook(workbook) {
+  let lastResult = { rows: [], errors: ['Could not find a Date and Description/Narration column in this workbook. Make sure one of the sheets has a header row.'] };
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) continue;
+    const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+    const result = parseBankStatementRowsWithHeaderScan(aoa, 15);
+    if (result.rows.length > 0) return result;
+    lastResult = result;
+  }
+  return lastResult;
+}
+
+// Reads a PDF bank statement by extracting each page's text, reconstructing rows from the
+// text items' on-page positions (grouping items into lines by y-coordinate, then ordering
+// left-to-right and inserting a column break wherever there's a wide horizontal gap), then
+// running the same header-aware row parser used for CSV/Excel. Best-effort only — scanned
+// (image-only) PDFs have no extractable text and won't produce any rows.
+async function parsePdfStatement(arrayBuffer) {
+  if (!window.pdfjsLib) {
+    return { rows: [], errors: ['PDF reading isn\u2019t available right now — try a CSV or Excel export instead.'] };
+  }
+  try {
+    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const lines = [];
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      const items = content.items
+        .filter((it) => (it.str || '').trim().length > 0)
+        .slice()
+        .sort((a, b) => (b.transform[5] - a.transform[5]) || (a.transform[4] - b.transform[4]));
+      let lineItems = [];
+      let lineY = null;
+      const flushLine = () => {
+        if (!lineItems.length) return;
+        lineItems.sort((a, b) => a.transform[4] - b.transform[4]);
+        let line = '';
+        let lastEnd = null;
+        lineItems.forEach((it) => {
+          const x = it.transform[4];
+          if (lastEnd !== null && x - lastEnd > 8) line += '\t';
+          else if (line && !line.endsWith(' ')) line += ' ';
+          line += it.str;
+          lastEnd = x + (it.width || it.str.length * 4);
+        });
+        if (line.trim()) lines.push(line);
+        lineItems = [];
+      };
+      items.forEach((it) => {
+        const y = it.transform[5];
+        if (lineY === null || Math.abs(y - lineY) > 3) {
+          flushLine();
+          lineY = y;
+        }
+        lineItems.push(it);
+      });
+      flushLine();
+    }
+    const rows = lines.map((l) => splitDelimitedLine(l, '\t'));
+    const result = parseBankStatementRowsWithHeaderScan(rows, 20);
+    if (result.rows.length === 0 && result.errors.length) {
+      return { rows: [], errors: ['Could not find a Date and Description/Narration column in this PDF. Scanned/image-only PDFs can\u2019t be read this way — try a CSV or Excel export instead.'] };
+    }
+    return result;
+  } catch (err) {
+    console.warn('PocketLedger: PDF statement read failed.', err);
+    return { rows: [], errors: ['Could not read this PDF — it may be scanned, password-protected, or corrupted. Try a CSV or Excel export instead.'] };
+  }
 }
 
 /* ============================== app configuration ============================== */
@@ -1717,7 +1828,7 @@ function HomeScreen({ user, stats, onPick }) {
     { id: 'loans', title: 'Loan Tracking', desc: 'Track money you’ve lent out and personal loans you’ve received, with reminders.', icon: HandCoins, tone: 'steel', stat: `${stats.loans} loan(s) on file` },
     { id: 'payments', title: 'Payment Portal', desc: 'Invoice clients, issue receipts, and send payment reminders for your business.', icon: Wallet, tone: 'gold', stat: `${stats.invoices} invoice(s)` },
     { id: 'spending', title: 'Expense & Budgeting', desc: 'Log personal or business expenses by category, set monthly budgets, and stay on top of both.', icon: CreditCard, tone: 'brick', stat: `${stats.expenses} expense(s) logged` },
-    { id: 'tax', title: 'Tax', desc: 'Import bank statements from any bank, consolidate them into one ledger, then calculate and file personal or company tax returns.', icon: Landmark, tone: 'navy', stat: `${stats.taxReturns} return(s) on file` },
+    { id: 'tax', title: 'Tax', desc: 'Import bank statements (CSV, Excel or PDF) from any bank, bring in your logged expenses, consolidate everything into one ledger, then calculate and file personal or company tax returns.', icon: Landmark, tone: 'navy', stat: `${stats.taxReturns} return(s) on file` },
   ];
   return (
     <>
@@ -2480,16 +2591,63 @@ function App() {
   const handleTaxFileSelected = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const { rows, errors } = parseBankStatementText(String(reader.result || ''));
+    const name = file.name.toLowerCase();
+    const isExcel = /\.(xlsx|xls)$/.test(name);
+    const isPdf = name.endsWith('.pdf') || file.type === 'application/pdf';
+    const finishPreview = (rows, errors) => {
       setTaxImportPreview({ fileName: file.name, rows, errors });
       if (rows.length === 0) flash('Could not read any transactions from that file — see the notes below.');
     };
-    reader.readAsText(file);
+    if (isExcel) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const workbook = XLSX.read(new Uint8Array(reader.result), { type: 'array' });
+          const { rows, errors } = parseBankStatementWorkbook(workbook);
+          finishPreview(rows, errors);
+        } catch (err) {
+          console.warn('PocketLedger: Excel statement read failed.', err);
+          finishPreview([], ['Could not read this Excel file — it may be corrupted or password-protected.']);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else if (isPdf) {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const { rows, errors } = await parsePdfStatement(reader.result);
+        finishPreview(rows, errors);
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const { rows, errors } = parseBankStatementText(String(reader.result || ''));
+        finishPreview(rows, errors);
+      };
+      reader.readAsText(file);
+    }
     e.target.value = '';
   };
   const cancelTaxImportPreview = () => setTaxImportPreview(null);
+  // Brings expenses already logged in the Expense & Budgeting tracker into the tax ledger,
+  // so the two don't have to be kept in sync by hand. Re-running it only pulls in expenses
+  // that haven't been brought over yet, so it's safe to press again after logging more.
+  const importFromExpenseTracker = () => {
+    if (guardWrite()) return;
+    if (expenses.length === 0) { flash('No expenses logged yet in Expense & Budgeting.'); return; }
+    const alreadyLinked = new Set(taxTransactions.filter((t) => t.expenseRef).map((t) => t.expenseRef));
+    const candidates = expenses.filter((ex) => !alreadyLinked.has(ex.id));
+    if (candidates.length === 0) { flash('Every logged expense is already in the tax ledger.'); return; }
+    const batchId = uid();
+    const newTxns = candidates.map((ex) => ({
+      id: uid(), batchId, date: ex.date, description: ex.note ? `${ex.category} — ${ex.note}` : ex.category,
+      amount: -Math.abs(Number(ex.amount || 0)), source: 'Expense Tracker', expenseRef: ex.id,
+      category: ex.category === 'Business' ? 'Business Expense (deductible)' : 'Personal (non-deductible)',
+    }));
+    setTaxTransactions((prev) => [...newTxns, ...prev]);
+    setTaxImports((prev) => [{ id: batchId, source: 'Expense Tracker', fileName: `${candidates.length} logged expense(s)`, count: newTxns.length, importedAt: new Date().toISOString() }, ...prev]);
+    flash(`Brought in ${newTxns.length} expense(s) from your Expense tracker.`);
+  };
   const confirmTaxImport = () => {
     if (guardWrite()) return;
     if (!taxImportPreview || taxImportPreview.rows.length === 0) return;
@@ -3774,7 +3932,8 @@ function App() {
         <div className="panel">
           <div className="panel-title">How this works</div>
           <div className="panel-sub" style={{ lineHeight: 1.6 }}>
-            1. Import statements from each of your banks in <strong>Import</strong> — any CSV export works, we auto-detect the columns.<br />
+            1. Import statements from each of your banks in <strong>Import</strong> — CSV, Excel or PDF exports all work, we auto-detect the columns.<br />
+            1b. In the same tab, one tap brings in everything already logged in <strong>Expense &amp; Budgeting</strong>, so you don't have to re-enter it.<br />
             2. Review and tag every line in <strong>Ledger</strong> — income, deductible expenses, or personal/non-taxable.<br />
             3. Calculate a return in <strong>Returns</strong> for a personal (PIT) or company (CIT) filing, then download or print it.
           </div>
@@ -3808,14 +3967,14 @@ function App() {
       <div className="panel">
         <div className="panel-title">Add a statement</div>
         <div className="panel-sub" style={{ marginBottom: 12 }}>
-          Works with CSV exports from any bank or fintech — GTBank, Access, Zenith, UBA, First Bank, Opay, Kuda, Moniepoint and more.
-          We auto-detect the date, description and amount columns, whatever the bank calls them.
+          Works with CSV, Excel (.xlsx/.xls) or PDF exports from any bank or fintech — GTBank, Access, Zenith, UBA, First Bank, Opay, Kuda, Moniepoint and more.
+          We auto-detect the date, description and amount columns, whatever the bank calls them. PDF statements are read from the text in the file, so a scanned/image-only PDF can't be read this way.
         </div>
         <div className="field"><label>Bank / account name</label>
           <input className="kb-input" value={taxImportSourceName} onChange={(e) => setTaxImportSourceName(e.target.value)} placeholder="e.g. GTBank — Current Account" />
         </div>
-        <input ref={taxFileInputRef} type="file" accept=".csv,.txt,text/csv" style={{ display: 'none' }} onChange={handleTaxFileSelected} />
-        <button className="btn btn-primary" onClick={triggerTaxImport}><Upload size={15} /> Choose statement file</button>
+        <input ref={taxFileInputRef} type="file" accept=".csv,.txt,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,.pdf,application/pdf" style={{ display: 'none' }} onChange={handleTaxFileSelected} />
+        <button className="btn btn-primary" onClick={triggerTaxImport}><Upload size={15} /> Choose statement file (CSV, Excel or PDF)</button>
 
         {taxImportPreview && (
           <div className="panel" style={{ marginTop: 16, background: 'var(--surface-2)' }}>
@@ -3850,6 +4009,16 @@ function App() {
             )}
           </div>
         )}
+      </div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
+        <div className="panel-title">Bring in your Expense &amp; Budgeting entries</div>
+        <div className="panel-sub" style={{ marginBottom: 12 }}>
+          Every expense already logged in <strong>Expense &amp; Budgeting</strong> can be pulled straight into the tax ledger — no re-typing.
+          Business-category expenses land as deductible; everything else comes in as personal/non-deductible so it stays out of your relief calculations.
+          Safe to press again later — only newly logged expenses get added.
+        </div>
+        <button className="btn btn-outline" onClick={importFromExpenseTracker}><Wallet size={15} /> Import from Expense tracker</button>
       </div>
 
       <div className="panel" style={{ marginTop: 16 }}>
